@@ -1,0 +1,16 @@
+# From instructions.yml run_commands.setup + PyYAML for configs
+datasets>=2.14.0
+transformers>=4.36.0
+accelerate>=0.25.0
+peft>=0.7.0
+trl>=0.7.0
+evaluate>=0.4.0
+sacrebleu>=2.3.0
+langdetect>=1.0.9
+python-dotenv>=1.0.0
+tqdm>=4.65.0
+pandas>=2.0.0
+PyYAML>=6.0
+torch>=2.0.0
+streamlit>=1.31.0
+openai>=1.0.0

@@ -1,0 +1,36 @@
+# Env and secrets (never commit tokens)
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Generated data and model outputs
+data/
+cache/
+outputs/
+reports/
+*.log
+logs/
+
+# IDE / editor / OS
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+.DS_Store
+
+# Temp / non-project
+src/tt
+agent-transcripts/
+*.tmp
