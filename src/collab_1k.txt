@@ -1,0 +1,86 @@
+# Colab: 1K subset end-to-end (bn by default)
+# Uses configs:
+# - configs/translation_1k.yaml  (limits to 1000 dialogues per split)
+# - configs/training_1k.yaml
+# - configs/eval_1k.yaml
+
+# Cell 1: Mount Drive + set persistent dirs
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os
+COLAB_ROOT = "/content/drive/MyDrive/Multilingual_DailyDialog"
+os.makedirs(COLAB_ROOT, exist_ok=True)
+
+# Persistent pip cache (speeds up re-installs)
+os.environ["PIP_CACHE_DIR"] = f"{COLAB_ROOT}/pip-cache"
+
+# Persist pipeline artifacts on Drive
+os.environ["DATA_DIR"] = f"{COLAB_ROOT}/data"
+os.environ["CACHE_DIR"] = f"{COLAB_ROOT}/cache"
+os.environ["OUTPUTS_DIR"] = f"{COLAB_ROOT}/outputs"
+os.environ["REPORTS_DIR"] = f"{COLAB_ROOT}/reports"
+
+# IMPORTANT: target languages.
+# Default in this repo is bn; set explicitly to avoid surprises.
+os.environ["TARGET_LANGS"] = "bn"
+
+
+# Cell 2: Get code + install deps
+# Option A (fast runtime I/O): clone into /content each session
+# %cd /content
+# !rm -rf Multilingual_DailyDialog
+# !git clone https://github.com/nazndev/Multilingual_DailyDialog.git
+# REPO_DIR = "/content/Multilingual_DailyDialog"
+
+# Option B (persistent): keep git clone on Drive and pull updates
+REPO_DIR = f"{COLAB_ROOT}/repo"
+if not os.path.exists(REPO_DIR):
+    !git clone https://github.com/nazndev/Multilingual_DailyDialog.git "$REPO_DIR"
+else:
+    !git -C "$REPO_DIR" pull
+
+%cd "$REPO_DIR"
+!pip install -q -r requirements.txt
+
+
+# (Optional) Cell 2b: Clear translation cache if you want a fully clean 1k rerun
+# NOTE: this deletes cached per-turn translations on Drive.
+# import shutil, yaml
+# from pathlib import Path
+# cfg = yaml.safe_load(open("configs/translation_1k.yaml", "r", encoding="utf-8"))
+# cache_dir = Path(os.environ["CACHE_DIR"]) / cfg["cache"]["dir"]
+# shutil.rmtree(cache_dir, ignore_errors=True)
+# print("Deleted cache:", cache_dir)
+
+
+# Cell 3: Run 1K subset pipeline
+import subprocess
+
+env = os.environ.copy()
+
+# Step 01: Download
+subprocess.run("python src/01_download.py", shell=True, cwd=REPO_DIR, env=env, check=True)
+
+# Step 02: Preprocess
+subprocess.run("python src/02_preprocess.py", shell=True, cwd=REPO_DIR, env=env, check=True)
+
+# Step 03: Translate (1k subset)
+subprocess.run("python src/03_translate.py --config configs/translation_1k.yaml", shell=True, cwd=REPO_DIR, env=env, check=True)
+
+# Step 05: Build SFT (writes to DATA_DIR/sft/multilingual_1k via translation_1k.yaml:sft_dir)
+subprocess.run("python src/05_build_sft.py --config configs/translation_1k.yaml", shell=True, cwd=REPO_DIR, env=env, check=True)
+
+# Step 06: Train SFT (small model + LoRA; writes to OUTPUTS_DIR/model_1k)
+# You can override model here if you want:
+# env["BASE_MODEL"] = "Qwen/Qwen2.5-0.5B-Instruct"
+subprocess.run("python src/06_train_sft.py --config configs/training_1k.yaml", shell=True, cwd=REPO_DIR, env=env, check=True)
+
+# Step 07: Eval (writes to REPORTS_DIR/eval_report_1k.md)
+subprocess.run("python src/07_eval.py --config configs/eval_1k.yaml", shell=True, cwd=REPO_DIR, env=env, check=True)
+
+print("Done. Check:")
+print("- Translated 1k:", os.path.join(env["DATA_DIR"], "translated_dailydialog_en_bn_1k"))
+print("- SFT 1k:", os.path.join(env["DATA_DIR"], "sft/multilingual_1k"))
+print("- Adapter:", os.path.join(env["OUTPUTS_DIR"], "model_1k/lora_adapter"))
+print("- Report:", os.path.join(env["REPORTS_DIR"], "eval_report_1k.md"))

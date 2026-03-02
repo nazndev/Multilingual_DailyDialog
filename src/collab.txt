@@ -1,0 +1,137 @@
+# Cell 1: Mount Drive and set project root
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os
+COLAB_ROOT = "/content/drive/MyDrive/Multilingual_DailyDialog"
+os.makedirs(COLAB_ROOT, exist_ok=True)
+
+# Optional but recommended: persist pip's download cache on Drive to speed up re-installs
+os.environ["PIP_CACHE_DIR"] = f"{COLAB_ROOT}/pip-cache"
+
+os.environ["DATA_DIR"]   = f"{COLAB_ROOT}/data"
+os.environ["CACHE_DIR"]  = f"{COLAB_ROOT}/cache"
+os.environ["OUTPUTS_DIR"] = f"{COLAB_ROOT}/outputs"
+os.environ["REPORTS_DIR"] = f"{COLAB_ROOT}/reports"
+
+
+# Cell 2: Get the code + install deps
+# Two options:
+# - Fast runtime I/O: clone into /content (re-clone each session)
+# - Persistent: keep the git clone on Drive and `git pull` when you return
+
+import os
+
+# OPTION A (fast): /content
+# REPO_DIR = "/content/Multilingual_DailyDialog"
+# if os.path.exists(REPO_DIR):
+#     !rm -rf "$REPO_DIR"
+# !git clone https://github.com/nazndev/Multilingual_DailyDialog.git "$REPO_DIR"
+
+# OPTION B (persistent): Drive (default)
+REPO_DIR = f"{COLAB_ROOT}/repo"
+if not os.path.exists(REPO_DIR):
+	!git clone https://github.com/nazndev/Multilingual_DailyDialog.git "$REPO_DIR"
+else:
+	!git -C "$REPO_DIR" pull
+
+%cd "$REPO_DIR"
+!pip install -q -r requirements.txt
+
+
+# Optional: copy .env from Drive if you use GPT translation later. For NLLB (default) you don't need it.
+
+# Tip: 1k subset mode (fast sanity run)
+# Use these configs to work on ~1000 dialogues per split without overwriting your full run outputs:
+# - configs/translation_1k.yaml  -> writes DATA_DIR/translated_dailydialog_en_bn_1k/
+# - configs/training_1k.yaml     -> reads DATA_DIR/sft/multilingual_1k/
+# - configs/eval_1k.yaml         -> evaluates from DATA_DIR/sft/multilingual_1k/
+
+
+# Step 01: Download
+import os, subprocess
+root = "/content/drive/MyDrive/Multilingual_DailyDialog"
+env = os.environ.copy()
+env["DATA_DIR"] = f"{root}/data"
+env["CACHE_DIR"] = f"{root}/cache"
+env["OUTPUTS_DIR"] = f"{root}/outputs"
+env["REPORTS_DIR"] = f"{root}/reports"
+repo = REPO_DIR
+# stdout=None, stderr=None so logs print live in the cell
+subprocess.run("python src/01_download.py", shell=True, cwd=repo, env=env, check=True, stdout=None, stderr=None)
+
+
+# Step 02: Preprocess
+import os, subprocess
+root = "/content/drive/MyDrive/Multilingual_DailyDialog"
+env = os.environ.copy()
+env["DATA_DIR"] = f"{root}/data"
+env["CACHE_DIR"] = f"{root}/cache"
+env["OUTPUTS_DIR"] = f"{root}/outputs"
+env["REPORTS_DIR"] = f"{root}/reports"
+repo = REPO_DIR
+subprocess.run("python src/02_preprocess.py", shell=True, cwd=repo, env=env, check=True, stdout=None, stderr=None)
+
+
+# Step 03: Translate
+import os, subprocess
+root = "/content/drive/MyDrive/Multilingual_DailyDialog"
+env = os.environ.copy()
+env["DATA_DIR"] = f"{root}/data"
+env["CACHE_DIR"] = f"{root}/cache"
+env["OUTPUTS_DIR"] = f"{root}/outputs"
+env["REPORTS_DIR"] = f"{root}/reports"
+repo = REPO_DIR
+subprocess.run("python src/03_translate.py --config configs/translation.yaml", shell=True, cwd=repo, env=env, check=True, stdout=None, stderr=None)
+
+# (Optional 1k mode)
+# subprocess.run("python src/03_translate.py --config configs/translation_1k.yaml", shell=True, cwd=repo, env=env, check=True, stdout=None, stderr=None)
+
+
+# Step 04: Build SFT
+import os, subprocess
+root = "/content/drive/MyDrive/Multilingual_DailyDialog"
+env = os.environ.copy()
+env["DATA_DIR"] = f"{root}/data"
+env["CACHE_DIR"] = f"{root}/cache"
+env["OUTPUTS_DIR"] = f"{root}/outputs"
+env["REPORTS_DIR"] = f"{root}/reports"
+repo = REPO_DIR
+subprocess.run("python src/05_build_sft.py --config configs/translation.yaml", shell=True, cwd=repo, env=env, check=True, stdout=None, stderr=None)
+
+# (Optional 1k mode)
+# subprocess.run("python src/05_build_sft.py --config configs/translation_1k.yaml", shell=True, cwd=repo, env=env, check=True, stdout=None, stderr=None)
+
+
+# Step 05: Train SFT — 7B on Colab T4 GPU (if OOM, use training_quick.yaml + BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct)
+import os, subprocess
+root = "/content/drive/MyDrive/Multilingual_DailyDialog"
+env = os.environ.copy()
+env["DATA_DIR"] = f"{root}/data"
+env["CACHE_DIR"] = f"{root}/cache"
+env["OUTPUTS_DIR"] = f"{root}/outputs"
+env["REPORTS_DIR"] = f"{root}/reports"
+env["BASE_MODEL"] = "Qwen/Qwen2.5-7B-Instruct"
+repo = REPO_DIR
+subprocess.run("python src/06_train_sft.py --config configs/training.yaml", shell=True, cwd=repo, env=env, check=True, stdout=None, stderr=None)
+
+# (Optional 1k mode)
+# env["BASE_MODEL"] = "Qwen/Qwen2.5-0.5B-Instruct"
+# subprocess.run("python src/06_train_sft.py --config configs/training_1k.yaml", shell=True, cwd=repo, env=env, check=True, stdout=None, stderr=None)
+
+
+# Step 06: Eval — use eval.yaml for 7B (eval_quick.yaml for 0.5B)
+import os, subprocess
+root = "/content/drive/MyDrive/Multilingual_DailyDialog"
+env = os.environ.copy()
+env["DATA_DIR"] = f"{root}/data"
+env["CACHE_DIR"] = f"{root}/cache"
+env["OUTPUTS_DIR"] = f"{root}/outputs"
+env["REPORTS_DIR"] = f"{root}/reports"
+env["BASE_MODEL"] = "Qwen/Qwen2.5-7B-Instruct"
+repo = REPO_DIR
+subprocess.run("python src/07_eval.py --config configs/eval.yaml", shell=True, cwd=repo, env=env, check=True, stdout=None, stderr=None)
+
+# (Optional 1k mode)
+# env["BASE_MODEL"] = "Qwen/Qwen2.5-0.5B-Instruct"
+# subprocess.run("python src/07_eval.py --config configs/eval_1k.yaml", shell=True, cwd=repo, env=env, check=True, stdout=None, stderr=None)

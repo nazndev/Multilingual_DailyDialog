@@ -1,0 +1,18 @@
+# Eval for model trained with training_1k.yaml
+model:
+  base_model: Qwen/Qwen2.5-0.5B-Instruct
+  lora_adapter_dir: model_1k/lora_adapter
+
+data:
+  test_path: sft/multilingual_1k/test.jsonl
+
+evaluation:
+  num_samples_per_lang: 50
+  langs: [bn]
+  check_language_with: langdetect
+  compute_bleu: true
+  run_baseline: true
+  max_new_tokens: 128
+
+outputs:
+  report_path: eval_report_1k.md
