@@ -4,11 +4,21 @@ import sys
 import traceback
 from pathlib import Path
 
+import argparse
+from typing import Optional
+
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.utils.env import get_dirs
+from src.utils.env import get_dirs, resolve_path
 from src.utils.logging_utils import setup_logger, banner, log_env_safely, timer, summarize_jsonl
+
+
+def load_cfg(path: Optional[str]) -> dict:
+    if not path:
+        return {}
+    import yaml
+    return yaml.safe_load(open(path, "r", encoding="utf-8"))
 
 
 def sha1(s: str) -> str:
@@ -20,15 +30,26 @@ def norm(t: str) -> str:
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default=None, help="Preprocess config (raw_dir, processed_dir, max_dialogues_per_split)")
+    args = ap.parse_args()
+
     logger = setup_logger("02_preprocess")
     banner(logger, "Step 02: Preprocess")
     log_env_safely(logger, ["DATA_DIR", "TARGET_LANGS"])
     try:
         dirs = get_dirs()
-        raw_dir = dirs["data"] / "raw"
-        processed_dir = dirs["data"] / "processed"
+        cfg = load_cfg(args.config)
+        raw_dir = resolve_path(cfg.get("raw_dir", "raw"), dirs["data"])
+        processed_dir = resolve_path(cfg.get("processed_dir", "processed"), dirs["data"])
+        max_per_split = cfg.get("max_dialogues_per_split")
         processed_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("input_dir=%s output_dir=%s", raw_dir, processed_dir)
+        logger.info(
+            "input_dir=%s output_dir=%s max_dialogues_per_split=%s",
+            raw_dir,
+            processed_dir,
+            max_per_split,
+        )
         for split in ["train", "validation", "test"]:
             p = raw_dir / f"{split}.parquet"
             if not p.exists():
@@ -43,6 +64,8 @@ def main():
                 written = 0
                 with open(out, "w", encoding="utf-8") as w:
                     for i, row in df.iterrows():
+                        if max_per_split is not None and written >= int(max_per_split):
+                            break
                         turns = [norm(x) for x in row["dialogue"]]
                         turns = [t for t in turns if t]
                         if not turns:

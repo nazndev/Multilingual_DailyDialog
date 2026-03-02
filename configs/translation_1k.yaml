@@ -1,4 +1,4 @@
-# Translation (1k subset): limits to first 1000 dialogues per split for fast testing.
+# Translation (1k subset): use processed_1k (generated from raw with preprocess_1k).
 # Backend: local = NLLB; for GPT set TRANSLATION_BACKEND=api and OPENAI_API_KEY.
 backend: local
 local:
@@ -16,10 +16,10 @@ api:
 # Note: actual targets are overridden by env TARGET_LANGS if set; default in this repo is bn.
 targets: [bn]
 
-# Key change: limit dataset size
+# Optional safety cap at translation time (usually redundant if processed_1k is used)
 max_dialogues_per_split: 1000
 
-processed_dir: processed
+processed_dir: processed_1k
 # Separate out_dir so you don't overwrite full outputs
 out_dir: translated_dailydialog_en_bn_1k
 
