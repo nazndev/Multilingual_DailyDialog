@@ -5,6 +5,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 import torch
 from tqdm import tqdm
@@ -28,12 +29,61 @@ def load_cfg(path: str) -> dict:
     return yaml.safe_load(open(path, "r", encoding="utf-8"))
 
 
-def translate_one_local(model, tok, text: str, src: str = "en", tgt: str = "bn", device: str = "cpu", max_new_tokens: int = 256) -> str:
+def _clean_generation_kwargs(d: dict) -> dict:
+    """Filter/normalize generation kwargs for model.generate()."""
+    if not isinstance(d, dict):
+        return {}
+    allowed = {
+        "num_beams",
+        "early_stopping",
+        "no_repeat_ngram_size",
+        "repetition_penalty",
+        "length_penalty",
+        "min_new_tokens",
+        "max_length",
+    }
+    out = {}
+    for k, v in d.items():
+        if k in allowed and v is not None:
+            out[k] = v
+    return out
+
+
+def translate_one_local(
+    model,
+    tok,
+    text: str,
+    src: str = "en",
+    tgt: str = "bn",
+    device: str = "cpu",
+    max_new_tokens: int = 256,
+    generation_kwargs: Optional[Dict[str, Any]] = None,
+) -> str:
     """Translate one sentence using local NLLB model."""
     tok.src_lang = LANG_MAP[src]
     enc = tok([text], return_tensors="pt", padding=True, truncation=True)
     enc = {k: v.to(device) for k, v in enc.items()}
-    gen = model.generate(**enc, forced_bos_token_id=tok.convert_tokens_to_ids(LANG_MAP[tgt]), max_new_tokens=max_new_tokens)
+
+    # Cap generation length for very short inputs to avoid degenerate loops.
+    # Character-based heuristic is good enough here; longer turns keep the configured cap.
+    max_new_tokens_eff = min(int(max_new_tokens), max(16, int(len(text) * 3)))
+
+    # Defaults chosen to reduce degenerate repetition on short inputs (e.g., "Oh no.")
+    # while remaining reasonable for translation quality.
+    gen_kwargs = {
+        "num_beams": 4,
+        "early_stopping": True,
+        "no_repeat_ngram_size": 3,
+        "repetition_penalty": 1.1,
+    }
+    gen_kwargs.update(_clean_generation_kwargs(generation_kwargs or {}))
+
+    gen = model.generate(
+        **enc,
+        forced_bos_token_id=tok.convert_tokens_to_ids(LANG_MAP[tgt]),
+        max_new_tokens=max_new_tokens_eff,
+        **gen_kwargs,
+    )
     return tok.batch_decode(gen, skip_special_tokens=True)[0]
 
 
@@ -109,6 +159,7 @@ def main():
         use_api = backend.lower() == "api"
         model_name = None
         tok, model, device = None, None, None
+        local_gen_cfg = _clean_generation_kwargs((cfg.get("local") or {}).get("generation") or {})
 
         if use_api:
             model_name = cfg.get("api", {}).get("model") or "gpt-4o-mini"
@@ -116,7 +167,7 @@ def main():
         else:
             model_name = get_env("TRANSLATION_MODEL") or cfg["local"]["model_name"]
             device = "cuda" if (cfg["local"]["device"] == "auto" and torch.cuda.is_available()) else "cpu"
-            logger.info("backend=local model=%s device=%s", model_name, device)
+            logger.info("backend=local model=%s device=%s gen=%s", model_name, device, local_gen_cfg)
             with timer(logger, "load_model"):
                 tok = NllbTokenizer.from_pretrained(model_name)
                 model = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device).eval()
@@ -153,7 +204,16 @@ def main():
                     for lang in targets:
                         t_out = []
                         for t in turns_en:
-                            key = sha256(lang + "\n" + t)
+                            # Cache key includes backend+model+generation settings so changing
+                            # translation settings doesn't reuse stale/bad cached outputs.
+                            cache_meta = {
+                                "backend": "api" if use_api else "local",
+                                "model": model_name,
+                                "lang": lang,
+                                "gen": {} if use_api else local_gen_cfg,
+                                "max_new_tokens": int(cfg.get("local", {}).get("max_new_tokens", 256)) if not use_api else int(cfg.get("api", {}).get("max_tokens", 256)),
+                            }
+                            key = sha256(json.dumps(cache_meta, sort_keys=True, ensure_ascii=True) + "\n" + t)
                             c = cache_dir / f"{key}.txt"
                             if c.exists():
                                 t_out.append(c.read_text(encoding="utf-8"))
@@ -164,7 +224,16 @@ def main():
                                     if use_api:
                                         tr = translate_one_api(cfg, t, "en", lang)
                                     else:
-                                        tr = translate_one_local(model, tok, t, "en", lang, device, cfg["local"]["max_new_tokens"])
+                                        tr = translate_one_local(
+                                            model,
+                                            tok,
+                                            t,
+                                            "en",
+                                            lang,
+                                            device,
+                                            cfg["local"]["max_new_tokens"],
+                                            generation_kwargs=local_gen_cfg,
+                                        )
                                     c.write_text(tr, encoding="utf-8")
                                     t_out.append(tr)
                                 except Exception:
