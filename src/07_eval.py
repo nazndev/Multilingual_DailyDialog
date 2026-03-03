@@ -275,7 +275,9 @@ def main():
         lines.append(f"- Base model: {base}\n")
         lines.append(f"- Adapter: {adapter if adapter else 'none'}\n")
         lines.append(f"- Languages: {', '.join(langs)}\n")
-        lines.append(f"- Samples per language: {n}\n\n")
+        lines.append(f"- Eval dataset: {test_path}\n")
+        lines.append(f"- Eval dataset rows: {len(ds)}\n")
+        lines.append(f"- Requested samples per language (cap): {n}\n\n")
 
         base_results = None
 
