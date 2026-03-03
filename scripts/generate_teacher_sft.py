@@ -11,8 +11,8 @@ This implements the professor requirement:
 
 Usage:
   /path/to/python scripts/generate_teacher_sft.py \
-    --input data/sft/sampled_1000_bn/train.jsonl \
-    --output data/sft/teacher_1000_bn/train.jsonl \
+        --input data/sft/dialogue_1000_bn/train.jsonl \
+        --output data/sft/teacher_dialogue_1000_bn/train.jsonl \
     --model Qwen/Qwen2.5-7B-Instruct \
     --max-new-tokens 96 --batch-size 1
 
