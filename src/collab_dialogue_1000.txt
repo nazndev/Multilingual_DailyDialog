@@ -110,8 +110,22 @@ print("Copied dialogue SFT to:", dst_dir)
 !python src/07_eval.py --config configs/eval_teacher_dialogue_1000.yaml
 
 
+# Cell 6b (optional): Professor-style report on full 1000-sample set
+# This evaluates on train+test combined (800+200=1000), but training is still only on the 800 train split.
+!cat "$DATA_DIR/sft/teacher_dialogue_1000_bn/train.jsonl" "$DATA_DIR/sft/teacher_dialogue_1000_bn/test.jsonl" > "$DATA_DIR/sft/teacher_dialogue_1000_bn/all_1000.jsonl"
+!wc -l "$DATA_DIR/sft/teacher_dialogue_1000_bn/all_1000.jsonl"
+!python src/07_eval.py --config configs/eval_teacher_dialogue_1000_all.yaml
+
+
 # Cell 7 (optional): Print the report
 report_path = os.path.join(os.environ["REPORTS_DIR"], "eval_report_teacher_dialogue_1000.md")
 print("\n===== eval_report_teacher_dialogue_1000.md =====\n")
 with open(report_path, "r", encoding="utf-8") as f:
+    print(f.read())
+
+# Also print the full-1000 report if generated
+report_path_all = os.path.join(os.environ["REPORTS_DIR"], "eval_report_teacher_dialogue_1000_all.md")
+if os.path.exists(report_path_all):
+  print("\n===== eval_report_teacher_dialogue_1000_all.md =====\n")
+  with open(report_path_all, "r", encoding="utf-8") as f:
     print(f.read())

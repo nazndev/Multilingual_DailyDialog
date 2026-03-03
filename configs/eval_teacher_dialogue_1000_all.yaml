@@ -1,0 +1,24 @@
+# Zero-shot vs Fine-tuned evaluation on the full 1000-sample set.
+# This is for the professor requirement “generate zero-shot vs fine-tune using 1000 sample”.
+# Note: training is still done only on the 800 train dialogues.
+
+model:
+  base_model: Qwen/Qwen2.5-0.5B-Instruct
+  lora_adapter_dir: model_teacher_dialogue_1000/lora_adapter
+
+data:
+  test_path: sft/teacher_dialogue_1000_bn/all_1000.jsonl
+
+evaluation:
+  # Evaluate all 1000 rows (bn only)
+  num_samples_per_lang: 1000
+  langs: [bn]
+  compute_bleu: true
+  run_baseline: true
+  max_new_tokens: 96
+
+outputs:
+  report_path: eval_report_teacher_dialogue_1000_all.md
+  include_samples: true
+  num_samples_per_lang: 5
+  samples_format: blocks
