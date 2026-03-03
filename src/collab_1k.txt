@@ -1,9 +1,6 @@
-# Colab: 1K subset end-to-end (bn by default)
-# Uses configs:
-# - configs/preprocess_1k.yaml   (writes DATA_DIR/processed_1k)
-# - configs/translation_1k.yaml  (limits to 1000 dialogues per split)
-# - configs/training_1k.yaml
-# - configs/eval_1k.yaml
+# DEPRECATED (kept only for reference).
+# This file referenced configs like preprocess_1k.yaml/translation_1k.yaml which are no longer in the repo.
+# Use: src/collab_dialogue_1000.txt for the current dialogue-based 800/200 pipeline.
 
 # Cell 1: Mount Drive + set persistent dirs
 from google.colab import drive

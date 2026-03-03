@@ -1,9 +1,6 @@
-# Colab: 100-row demo end-to-end (bn by default)
-# Uses configs:
-# - configs/preprocess_100.yaml
-# - configs/translation_100.yaml
-# - configs/training_100.yaml
-# - configs/eval_100.yaml
+# DEPRECATED (kept only for reference).
+# This file referenced configs like preprocess_100.yaml/translation_100.yaml which are no longer in the repo.
+# Use: src/collab_dialogue_1000.txt for the current dialogue-based 800/200 pipeline.
 
 # Cell 1: Mount Drive + set persistent dirs
 from google.colab import drive
