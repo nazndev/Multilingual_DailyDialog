@@ -5,6 +5,8 @@
 # 3) Fine-tune Qwen0.5B on teacher outputs
 # 4) Evaluate zero-shot vs fine-tuned on the 200 teacher-labeled test dialogues
 #
+# IMPORTANT (Colab): Runtime -> Change runtime type -> Hardware accelerator: GPU
+#
 # Uses files/configs in this repo:
 # - data/sft/dialogue_1000_bn/{train,test}.jsonl
 # - scripts/generate_teacher_sft.py
@@ -40,7 +42,27 @@ else:
     !git -C "$REPO_DIR" pull
 
 %cd "$REPO_DIR"
-!pip install -q -r requirements.txt
+
+# Colab already includes a CUDA-enabled PyTorch build.
+# Installing `torch` via pip can silently replace it with a CPU-only wheel.
+!grep -vE '^\s*torch\b' requirements.txt > /tmp/requirements_no_torch.txt
+!pip install -q -r /tmp/requirements_no_torch.txt
+
+# Some HF tokenizers/models may require these.
+!pip install -q sentencepiece protobuf
+
+
+# Cell 2b: Environment sanity check (CUDA + key libs)
+import torch, transformers, datasets, accelerate, peft, trl
+print("torch:", torch.__version__)
+print("cuda available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+  print("cuda device:", torch.cuda.get_device_name(0))
+print("transformers:", transformers.__version__)
+print("datasets:", datasets.__version__)
+print("accelerate:", accelerate.__version__)
+print("peft:", peft.__version__)
+print("trl:", trl.__version__)
 
 
 # Cell 3: Copy the dialogue-level SFT from repo -> Drive DATA_DIR

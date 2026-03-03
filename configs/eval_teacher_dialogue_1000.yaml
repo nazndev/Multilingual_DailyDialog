@@ -1,5 +1,5 @@
 # Zero-shot vs Fine-tuned evaluation on teacher-labeled test set.
-# Dialogue-based: test set consists of 200 held-out dialogues (multiple SFT rows).
+# Dialogue-based: test set consists of 200 held-out dialogues (one SFT row per dialogue).
 
 model:
   base_model: Qwen/Qwen2.5-0.5B-Instruct
@@ -9,7 +9,7 @@ data:
   test_path: sft/teacher_dialogue_1000_bn/test.jsonl
 
 evaluation:
-  # Not the number of dialogues; this is how many SFT rows to sample for metric computation.
+  # This is how many SFT rows to sample for metric computation.
   num_samples_per_lang: 200
   langs: [bn]
   compute_bleu: true

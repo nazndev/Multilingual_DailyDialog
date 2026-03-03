@@ -1,6 +1,6 @@
 # Train Qwen 0.5B on teacher-labeled Bangla SFT examples.
 # Dialogue-based: train/test are split by dialogue_id (800/200 dialogues),
-# but each file contains multiple SFT rows (one per assistant turn).
+# and each JSONL has exactly one SFT row per dialogue.
 
 base_model: Qwen/Qwen2.5-0.5B-Instruct
 
