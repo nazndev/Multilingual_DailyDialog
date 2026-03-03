@@ -17,20 +17,21 @@ install:
 
 quick:
 	$(PYTHON) src/01_download.py
-	$(PYTHON) src/02_preprocess.py
-	$(PYTHON) src/03_translate.py --config configs/translation.yaml
-	$(PYTHON) src/05_build_sft.py --config configs/translation.yaml
-	$(PYTHON) src/06_train_sft.py --config configs/training.yaml
-	$(PYTHON) src/07_eval.py --config configs/eval.yaml
+	$(PYTHON) src/02_preprocess.py --config configs/preprocess_1000.yaml
+	TARGET_LANGS=bn TRANSLATION_BACKEND=api $(PYTHON) src/03_translate.py --config configs/translation_1000_api_bn.yaml
+	$(PYTHON) src/04_quality_checks.py --config configs/translation_1000_api_bn.yaml
+	TARGET_LANGS=bn $(PYTHON) src/05_build_sft.py --config configs/translation_1000_api_bn.yaml
+	BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct $(PYTHON) src/06_train_sft.py --config configs/training_1000.yaml
+	BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct $(PYTHON) src/07_eval.py --config configs/eval_1000.yaml
 
 # Same as quick but 0.5B model (fits MacBook / Colab free). Overrides BASE_MODEL so .env does not force 7B.
 quick-small:
 	$(PYTHON) src/01_download.py
-	$(PYTHON) src/02_preprocess.py
-	$(PYTHON) src/03_translate.py --config configs/translation.yaml
-	$(PYTHON) src/05_build_sft.py --config configs/translation.yaml
-	BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct $(PYTHON) src/06_train_sft.py --config configs/training_quick.yaml
-	BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct $(PYTHON) src/07_eval.py --config configs/eval_quick.yaml
+	$(PYTHON) src/02_preprocess.py --config configs/preprocess_1000.yaml
+	TARGET_LANGS=bn TRANSLATION_BACKEND=api $(PYTHON) src/03_translate.py --config configs/translation_1000_api_bn.yaml
+	TARGET_LANGS=bn $(PYTHON) src/05_build_sft.py --config configs/translation_1000_api_bn.yaml
+	BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct $(PYTHON) src/06_train_sft.py --config configs/training_1000.yaml
+	BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct $(PYTHON) src/07_eval.py --config configs/eval_1000.yaml
 
 full:
 	bash scripts/demo.sh
@@ -57,7 +58,7 @@ fresh-full:
 
 # Step 3 only: translate with LLM (GPT). Set OPENAI_API_KEY and TRANSLATION_BACKEND=api in .env. Run 01 and 02 first.
 translate-llm:
-	TRANSLATION_BACKEND=api $(PYTHON) src/03_translate.py --config configs/translation.yaml
+	TARGET_LANGS=bn TRANSLATION_BACKEND=api $(PYTHON) src/03_translate.py --config configs/translation_1000_api_bn.yaml
 
 # List latest pipeline log files (REPORTS_DIR/logs). Use tail -f reports/logs/<file> to watch.
 logs:

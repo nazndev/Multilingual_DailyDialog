@@ -65,15 +65,27 @@ def run_model_on_buckets(model, tok, buckets, langs, max_new_tokens=128):
                 "turn_index": rec.get("turn_index"),
             }
             messages = rec["messages"][:-1] if rec.get("messages") else []
-            prompt_ids = tok.apply_chat_template(
-                messages, add_generation_prompt=True, return_tensors="pt"
-            ).to(model.device)
+            enc = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
+            # Transformers 5.x returns a BatchEncoding; generate() expects tensors.
+            input_ids = enc["input_ids"] if isinstance(enc, dict) else getattr(enc, "input_ids", enc)
+            attention_mask = None
+            try:
+                attention_mask = enc.get("attention_mask") if hasattr(enc, "get") else None
+            except Exception:
+                attention_mask = None
+
+            input_ids = input_ids.to(model.device)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(model.device)
+
+            prompt_len = input_ids.shape[1]
             out = model.generate(
-                prompt_ids,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
                 pad_token_id=tok.pad_token_id or tok.eos_token_id,
             )
-            new_ids = out[0][prompt_ids.shape[1] :]
+            new_ids = out[0][prompt_len:]
             gen = tok.decode(new_ids, skip_special_tokens=True).strip()
             results[l]["refs"].append(ref)
             results[l]["hyps"].append(gen)
@@ -124,6 +136,62 @@ def _append_examples(lines, title: str, langs: list, base_results: dict, lora_re
         lines.append("\n")
 
 
+def _md_escape_cell(s: str, max_chars: int = 220) -> str:
+    s = (s or "").strip()
+    if not s:
+        return ""
+    # Keep tables readable.
+    if max_chars and len(s) > max_chars:
+        s = s[: max_chars - 3] + "..."
+    # Basic markdown table escaping.
+    s = s.replace("|", "\\|")
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = s.replace("\n", "<br>")
+    return s
+
+
+def _append_samples_table(
+    lines,
+    title: str,
+    langs: list,
+    base_results: dict,
+    lora_results: dict,
+    max_rows: int = 3,
+):
+    lines.append(f"## {title}\n\n")
+    for l in langs:
+        lines.append(f"### {l}\n\n")
+        base = base_results.get(l) if base_results else None
+        lora = lora_results.get(l) if lora_results else None
+        if not base or not lora:
+            lines.append("*(No samples available.)*\n\n")
+            continue
+
+        n = min(
+            max_rows,
+            len(base.get("hyps", [])),
+            len(lora.get("hyps", [])),
+        )
+        if n <= 0:
+            lines.append("*(No samples available.)*\n\n")
+            continue
+
+        lines.append("| # | dialogue_id | turn_index | Prompt | Reference (gold) | Zero-shot output | Fine-tuned (LoRA) output |\n")
+        lines.append("|---:|---|---:|---|---|---|---|\n")
+        for i in range(n):
+            meta = (base.get("meta") or [{}])[i] or {}
+            did = str(meta.get("dialogue_id") or "unknown")
+            tidx = meta.get("turn_index")
+            prompt = _md_escape_cell((base.get("prompts") or [""])[i], max_chars=240)
+            ref = _md_escape_cell((base.get("refs") or [""])[i], max_chars=220)
+            zh = _md_escape_cell((base.get("hyps") or [""])[i], max_chars=220)
+            fh = _md_escape_cell((lora.get("hyps") or [""])[i], max_chars=220)
+            lines.append(
+                f"| {i+1} | {did} | {tidx} | {prompt} | {ref} | {zh} | {fh} |\n"
+            )
+        lines.append("\n")
+
+
 def compute_bleu(refs, hyps):
     try:
         import sacrebleu
@@ -131,6 +199,10 @@ def compute_bleu(refs, hyps):
         return round(bleu.score, 2)
     except Exception:
         return None
+
+
+def _fmt_bleu(x):
+    return "-" if x is None else str(x)
 
 
 def main():
@@ -144,7 +216,8 @@ def main():
         dirs = get_dirs()
         cfg = load_cfg(args.config)
         log_config_safely(logger, cfg, "config")
-        base = get_env("BASE_MODEL") or cfg["model"]["base_model"]
+        # Prefer the config's model for reproducibility; fall back to env only if config omits it.
+        base = cfg.get("model", {}).get("base_model") or get_env("BASE_MODEL")
         adapter_rel = cfg["model"].get("lora_adapter_dir")
         adapter = resolve_path(adapter_rel, dirs["outputs"]) if adapter_rel else None
         test_path = resolve_path(cfg["data"]["test_path"], dirs["data"])
@@ -160,8 +233,11 @@ def main():
         out_cfg = cfg.get("outputs", {}) or {}
         include_examples = bool(out_cfg.get("include_samples", out_cfg.get("include_examples", False)))
         num_examples = int(out_cfg.get("num_samples_per_lang", out_cfg.get("num_examples_per_lang", 3)))
+        samples_format = (out_cfg.get("samples_format") or "blocks").strip().lower()
         env_targets = get_langs()["targets"]
-        langs = env_targets if env_targets else cfg["evaluation"]["langs"]
+        cfg_langs = cfg.get("evaluation", {}).get("langs")
+        # Prefer config so eval is deterministic even if TARGET_LANGS is set.
+        langs = cfg_langs if cfg_langs else env_targets
         n = int(cfg["evaluation"]["num_samples_per_lang"])
         logger.info("evaluation_langs=%s num_samples_per_lang=%s run_baseline=%s compute_bleu=%s", langs, n, run_baseline, compute_bleu_flag)
 
@@ -179,27 +255,36 @@ def main():
             tok = AutoTokenizer.from_pretrained(base, use_fast=True)
             if tok.pad_token is None:
                 tok.pad_token = tok.eos_token
-            model = AutoModelForCausalLM.from_pretrained(base, device_map="auto")
+
+            # Keep the model on a single device for reliable generation on macOS.
+            import torch
+
+            if torch.cuda.is_available():
+                device = torch.device("cuda")
+            elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+                device = torch.device("mps")
+            else:
+                device = torch.device("cpu")
+
+            model = AutoModelForCausalLM.from_pretrained(base)
+            model.to(device)
+            logger.info("model_device=%s", device)
 
         lines = ["# Evaluation Report: Zero-shot vs Fine-tuned\n\n"]
+        lines.append("## Run settings\n\n")
+        lines.append(f"- Base model: {base}\n")
+        lines.append(f"- Adapter: {adapter if adapter else 'none'}\n")
+        lines.append(f"- Languages: {', '.join(langs)}\n")
+        lines.append(f"- Samples per language: {n}\n\n")
 
         base_results = None
 
         # Zero-shot: base model only (no LoRA)
         if run_baseline:
             lines.append("## Zero-shot (base model, no fine-tuning)\n\n")
+            lines.append("Generated outputs using the base model only (no LoRA). Details are summarized below.\n\n")
             base_results = run_model_on_buckets(model, tok, buckets, langs, max_new_tokens)
-            for l in langs:
-                count = len(buckets[l])
-                lines.append(f"### {l}\n")
-                lines.append(f"- Samples: {count}\n")
-                lines.append(f"- LangID match: {base_results[l]['langid_ok']}/{count}\n")
-                if compute_bleu_flag and base_results[l]["refs"]:
-                    bleu = compute_bleu(base_results[l]["refs"], base_results[l]["hyps"])
-                    if bleu is not None:
-                        lines.append(f"- BLEU: {bleu}\n")
-                lines.append("\n")
-            lines.append("\n")
+            # Header later; we present a combined comparison table.
 
         if adapter and adapter.exists():
             model = PeftModel.from_pretrained(model, str(adapter))
@@ -207,42 +292,82 @@ def main():
 
         if adapter and adapter.exists():
             lines.append("## Fine-tuned (LoRA)\n\n")
+            lines.append("Generated outputs using the same base model with the trained LoRA adapter applied. Details are summarized below.\n\n")
             lora_results = run_model_on_buckets(model, tok, buckets, langs, max_new_tokens)
         else:
-            lines.append("## Fine-tuned (LoRA)\n\n*Adapter not found; run step 6 first.*\n\n")
-            lora_results = {l: {"refs": [], "hyps": [], "langid_ok": 0} for l in langs}
+            lines.append("## Fine-tuned (LoRA)\n\n")
+            lines.append("*Adapter not found; run step 6 first.*\n\n")
+            lora_results = {l: {"refs": [], "hyps": [], "prompts": [], "meta": [], "langid_ok": 0} for l in langs}
 
         for l in langs:
             count = len(buckets[l])
-            lines.append(f"### {l}\n")
-            lines.append(f"- Samples: {count}\n")
-            lines.append(f"- LangID match: {lora_results[l]['langid_ok']}/{count}\n")
-            if compute_bleu_flag and lora_results[l]["refs"]:
-                bleu = compute_bleu(lora_results[l]["refs"], lora_results[l]["hyps"])
-                if bleu is not None:
-                    lines.append(f"- BLEU: {bleu}\n")
-            lines.append("\n")
+            pass
+
+        # Summary comparison table
+        lines.append("## Summary (Zero-shot vs Fine-tuned)\n\n")
+        if compute_bleu_flag:
+            lines.append("| Lang | Samples | Zero-shot LangID | Zero-shot BLEU | Fine-tuned LangID | Fine-tuned BLEU |\n")
+            lines.append("|---|---:|---:|---:|---:|---:|\n")
+        else:
+            lines.append("| Lang | Samples | Zero-shot LangID | Fine-tuned LangID |\n")
+            lines.append("|---|---:|---:|---:|\n")
+
+        overall_base_refs, overall_base_hyps = [], []
+        overall_lora_refs, overall_lora_hyps = [], []
+
+        for l in langs:
+            count = len(buckets[l])
+            z_ok = base_results[l]["langid_ok"] if base_results and run_baseline else 0
+            f_ok = lora_results[l]["langid_ok"] if lora_results else 0
+
+            if compute_bleu_flag:
+                z_bleu = None
+                f_bleu = None
+                if base_results and run_baseline and base_results[l].get("refs"):
+                    z_bleu = compute_bleu(base_results[l]["refs"], base_results[l]["hyps"])
+                    overall_base_refs.extend(base_results[l]["refs"])
+                    overall_base_hyps.extend(base_results[l]["hyps"])
+                if lora_results and lora_results[l].get("refs"):
+                    f_bleu = compute_bleu(lora_results[l]["refs"], lora_results[l]["hyps"])
+                    overall_lora_refs.extend(lora_results[l]["refs"])
+                    overall_lora_hyps.extend(lora_results[l]["hyps"])
+
+                lines.append(
+                    f"| {l} | {count} | {z_ok}/{count} | {_fmt_bleu(z_bleu)} | {f_ok}/{count} | {_fmt_bleu(f_bleu)} |\n"
+                )
+            else:
+                lines.append(f"| {l} | {count} | {z_ok}/{count} | {f_ok}/{count} |\n")
+        lines.append("\n")
 
         if compute_bleu_flag:
-            all_refs, all_hyps = [], []
-            for l in langs:
-                all_refs.extend(lora_results[l]["refs"])
-                all_hyps.extend(lora_results[l]["hyps"])
-            if all_refs:
-                overall_bleu = compute_bleu(all_refs, all_hyps)
-                if overall_bleu is not None:
-                    lines.append("### Overall\n")
-                    lines.append(f"- BLEU (all languages): {overall_bleu}\n\n")
+            lines.append("## Overall BLEU\n\n")
+            if run_baseline and overall_base_refs:
+                overall_z = compute_bleu(overall_base_refs, overall_base_hyps)
+                lines.append(f"- Zero-shot BLEU (all languages): {_fmt_bleu(overall_z)}\n")
+            if overall_lora_refs:
+                overall_f = compute_bleu(overall_lora_refs, overall_lora_hyps)
+                lines.append(f"- Fine-tuned BLEU (all languages): {_fmt_bleu(overall_f)}\n")
+            lines.append("\n")
 
         if include_examples and run_baseline and base_results is not None and adapter and adapter.exists():
-            _append_examples(
-                lines,
-                title="Samples (from test set): Zero-shot vs Fine-tuned",
-                langs=langs,
-                base_results=base_results,
-                lora_results=lora_results,
-                max_examples=num_examples,
-            )
+            if samples_format == "table":
+                _append_samples_table(
+                    lines,
+                    title="Samples Table (from test set): Zero-shot vs Fine-tuned",
+                    langs=langs,
+                    base_results=base_results,
+                    lora_results=lora_results,
+                    max_rows=num_examples,
+                )
+            else:
+                _append_examples(
+                    lines,
+                    title="Samples (from test set): Zero-shot vs Fine-tuned",
+                    langs=langs,
+                    base_results=base_results,
+                    lora_results=lora_results,
+                    max_examples=num_examples,
+                )
 
         report_path = cfg["outputs"].get("report_path", "eval_report.md")
         out_path = resolve_path(report_path, dirs["reports"])

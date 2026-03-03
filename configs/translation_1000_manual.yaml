@@ -1,0 +1,13 @@
+# Manual ChatGPT translation (web) for the 1000-dialogue subset.
+# Step 03/04 are skipped; Step 05 uses this config to find translations.
+
+processed_dir: processed_1000
+
+# Where YOU will save the manually translated JSONL files:
+#   data/translated_manual_1000/train.jsonl
+#   data/translated_manual_1000/test.jsonl
+# (validation.jsonl is optional)
+out_dir: translated_manual_1000
+
+# Where Step 05 writes the SFT dataset used by training/eval
+sft_dir: sft/multilingual_1000

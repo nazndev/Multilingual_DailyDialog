@@ -1,0 +1,22 @@
+# API translation (OpenAI) for the 1000-dialogue subset (800/200/200).
+# Produces translated JSONL with turns_bn and preserves labels.
+# Run with env: TARGET_LANGS=bn TRANSLATION_BACKEND=api OPENAI_API_KEY=...
+
+processed_dir: processed_1000
+out_dir: translated_api_1000_bn
+sft_dir: sft/multilingual_1000
+
+# Cache stores per-turn translations (even though we request per-dialogue batches)
+cache:
+  dir: translation_api_1000_bn
+
+backend: api
+
+targets: [bn]
+
+api:
+  provider: openai
+  model: gpt-4.1
+  max_tokens: 1024
+  max_retries: 3
+  sleep_between_retries_sec: 1

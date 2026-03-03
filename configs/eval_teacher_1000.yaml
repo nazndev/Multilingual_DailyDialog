@@ -1,0 +1,21 @@
+# Zero-shot vs Fine-tuned evaluation on teacher-labeled 200-example test set.
+
+model:
+  base_model: Qwen/Qwen2.5-0.5B-Instruct
+  lora_adapter_dir: model_teacher_1000/lora_adapter
+
+data:
+  test_path: sft/teacher_1000_bn/test.jsonl
+
+evaluation:
+  num_samples_per_lang: 200
+  langs: [bn]
+  compute_bleu: true
+  run_baseline: true
+  max_new_tokens: 96
+
+outputs:
+  report_path: eval_report_teacher_1000.md
+  include_samples: true
+  num_samples_per_lang: 5
+  samples_format: blocks

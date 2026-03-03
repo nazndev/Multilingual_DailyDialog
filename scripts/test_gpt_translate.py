@@ -105,8 +105,32 @@ def main():
                 print("  Tip: Add uncommented line: OPENAI_API_KEY=sk-... (no spaces around =)")
         sys.exit(1)
 
-    cfg_path = REPO_ROOT / "configs" / "translation.yaml"
-    cfg = load_cfg(cfg_path)
+    # Prefer an on-disk translation config if present, but don't fail if the repo
+    # is configured for manual-translation workflow and the legacy file is gone.
+    cfg = {
+        "api": {
+            "provider": "openai",
+            "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+            "max_tokens": int(os.environ.get("OPENAI_MAX_TOKENS", "256")),
+        }
+    }
+    cfg_candidates = [
+        REPO_ROOT / "configs" / "translation.yaml",
+        REPO_ROOT / "configs" / "translation_1000.yaml",
+        REPO_ROOT / "configs" / "translation_1000_manual.yaml",
+    ]
+    for cfg_path in cfg_candidates:
+        if cfg_path.exists():
+            try:
+                loaded = load_cfg(cfg_path)
+                if isinstance(loaded, dict):
+                    # Overlay so env defaults still work when api section is absent.
+                    cfg.update(loaded)
+                break
+            except Exception:
+                # Keep defaults if the config is malformed.
+                break
+
     model = cfg.get("api", {}).get("model", "gpt-4o-mini")
     print(f"Testing GPT translation (model: {model})")
     print()

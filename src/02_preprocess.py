@@ -50,6 +50,25 @@ def main():
             processed_dir,
             max_per_split,
         )
+        def _cap_for(split_name: str):
+            if max_per_split is None:
+                return None
+            # Back-compat: integer applies to all splits.
+            if isinstance(max_per_split, int):
+                return int(max_per_split)
+            # YAML may load numbers as int/float; accept numeric.
+            if isinstance(max_per_split, (float,)):
+                return int(max_per_split)
+            # New: mapping per split, e.g. {train: 800, validation: 0, test: 200}
+            if isinstance(max_per_split, dict):
+                v = max_per_split.get(split_name)
+                if v is None:
+                    return None
+                return int(v)
+            raise ValueError(
+                "max_dialogues_per_split must be int or mapping like {train: 800, test: 200}"
+            )
+
         for split in ["train", "validation", "test"]:
             p = raw_dir / f"{split}.parquet"
             if not p.exists():
@@ -62,9 +81,10 @@ def main():
                 logger.info("input path=%s records=%s", p, len(df))
                 out = processed_dir / f"{split}_en.jsonl"
                 written = 0
+                cap = _cap_for(split)
                 with open(out, "w", encoding="utf-8") as w:
                     for i, row in df.iterrows():
-                        if max_per_split is not None and written >= int(max_per_split):
+                        if cap is not None and written >= int(cap):
                             break
                         turns = [norm(x) for x in row["dialogue"]]
                         turns = [t for t in turns if t]

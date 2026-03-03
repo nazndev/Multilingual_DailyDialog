@@ -18,19 +18,19 @@ echo "[smoke] 01 Download"
 "$PYTHON" src/01_download.py
 
 echo "[smoke] 02 Preprocess"
-"$PYTHON" src/02_preprocess.py
+"$PYTHON" src/02_preprocess.py --config configs/preprocess_1000.yaml
 
 echo "[smoke] 03 Translate"
-"$PYTHON" src/03_translate.py --config configs/translation.yaml
+TARGET_LANGS=bn TRANSLATION_BACKEND=api "$PYTHON" src/03_translate.py --config configs/translation_1000_api_bn.yaml
 
 echo "[smoke] 04 Build SFT"
-"$PYTHON" src/05_build_sft.py --config configs/translation.yaml
+TARGET_LANGS=bn "$PYTHON" src/05_build_sft.py --config configs/translation_1000_api_bn.yaml
 
 echo "[smoke] 05 Train SFT"
-"$PYTHON" src/06_train_sft.py --config configs/training.yaml
+BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct "$PYTHON" src/06_train_sft.py --config configs/training_1000.yaml
 
 echo "[smoke] 06 Eval"
-"$PYTHON" src/07_eval.py --config configs/eval.yaml
+BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct "$PYTHON" src/07_eval.py --config configs/eval_1000.yaml
 
 echo "[smoke] Verifying outputs..."
 "$PYTHON" - <<'PY'
@@ -45,12 +45,13 @@ out_dir = dirs["outputs"]
 reports_dir = dirs["reports"]
 
 translated_dir = data_dir / "translated_dailydialog_en_bn_ar_es"
-sft_dir = data_dir / "sft" / "multilingual"
-adapter_dir = out_dir / "model" / "lora_adapter"
+translated_dir = data_dir / "translated_api_1000_bn"
+sft_dir = data_dir / "sft" / "multilingual_1000"
+adapter_dir = out_dir / "model_1000" / "lora_adapter"
 
 checks = []
 # Required files
-for p in [translated_dir / "test.jsonl", sft_dir / "test.jsonl", reports_dir / "eval_report.md"]:
+for p in [translated_dir / "test.jsonl", sft_dir / "test.jsonl", reports_dir / "eval_report_1000.md"]:
     if not p.exists():
         checks.append(f"Missing: {p}")
 if not adapter_dir.exists():

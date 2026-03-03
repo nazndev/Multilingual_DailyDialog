@@ -5,7 +5,7 @@ import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.utils.env import get_dirs, resolve_path
+from src.utils.env import get_dirs, get_langs, resolve_path
 from src.utils.logging_utils import setup_logger, banner, log_config_safely, log_env_safely, timer, summarize_jsonl
 
 
@@ -65,8 +65,10 @@ def main():
         sft_dir = resolve_path(cfg.get("sft_dir", "sft/multilingual"), dirs["data"])
         sft_dir.mkdir(parents=True, exist_ok=True)
         logger.info("input_dir=%s output_dir=%s", in_dir, sft_dir)
-        langs = _infer_langs(in_dir)
-        logger.info("sft_languages=%s (from translated data)", langs)
+        env_targets = get_langs()["targets"]
+        inferred = _infer_langs(in_dir)
+        langs = env_targets if env_targets else inferred
+        logger.info("sft_languages=%s (env_targets=%s inferred=%s)", langs, env_targets, inferred)
         for split in ["train", "validation", "test"]:
             inp = in_dir / f"{split}.jsonl"
             if not inp.exists():

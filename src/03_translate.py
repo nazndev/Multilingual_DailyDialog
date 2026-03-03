@@ -1,9 +1,11 @@
 import argparse
+import ast
 import hashlib
 import json
 import sys
 import time
 import traceback
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -106,14 +108,7 @@ def translate_one_api(cfg: dict, text: str, src: str = "en", tgt: str = "bn") ->
     )
 
     if provider == "openai":
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise RuntimeError("OpenAI backend requires: pip install openai")
-        api_key = get_env("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY must be set in environment for API translation")
-        client = OpenAI(api_key=api_key)
+        client = _get_openai_client()
         last_err = None
         for attempt in range(max_retries):
             try:
@@ -133,6 +128,89 @@ def translate_one_api(cfg: dict, text: str, src: str = "en", tgt: str = "bn") ->
         raise last_err or RuntimeError("No response from API")
 
     raise ValueError(f"Unsupported translation API provider: {provider}. Use backend: local for NLLB or provider: openai with OPENAI_API_KEY.")
+
+
+@lru_cache(maxsize=1)
+def _get_openai_client():
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise RuntimeError("OpenAI backend requires: pip install openai")
+    api_key = get_env("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY must be set in environment for API translation")
+    return OpenAI(api_key=api_key)
+
+
+def _strip_code_fences(s: str) -> str:
+    s = (s or "").strip()
+    if s.startswith("```"):
+        lines = s.splitlines()
+        if len(lines) >= 2 and lines[-1].strip().startswith("```"):
+            lines = lines[1:-1]
+            # Drop optional language tag line like ```json
+            if lines and lines[0].strip().lower() in {"json", "javascript"}:
+                lines = lines[1:]
+            return "\n".join(lines).strip()
+    return s
+
+
+def _parse_list_of_strings(raw: str) -> list[str]:
+    """Parse a JSON/Python list response into list[str]."""
+    raw = _strip_code_fences(raw)
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        # Some models may return a Python-style list; accept as fallback.
+        obj = ast.literal_eval(raw)
+    if not isinstance(obj, list) or any(not isinstance(x, str) for x in obj):
+        raise ValueError("Expected a list of strings")
+    return obj
+
+
+def translate_many_api(cfg: dict, texts: list[str], src: str = "en", tgt: str = "bn") -> list[str]:
+    """Translate a list of sentences using one API call; returns aligned list."""
+    if not texts:
+        return []
+    api_cfg = cfg.get("api", {})
+    provider = (api_cfg.get("provider") or "openai").lower()
+    model_name = api_cfg.get("model") or "gpt-4o-mini"
+    max_retries = int(api_cfg.get("max_retries", 3))
+    sleep_sec = float(api_cfg.get("sleep_between_retries_sec", 1))
+    target_lang = LANG_NAMES.get(tgt, tgt)
+
+    prompt = (
+        f"Translate the following English dialogue turns to {target_lang}. "
+        "Return ONLY a valid JSON array of strings with EXACTLY the same length and order as the input. "
+        "No explanations, no extra keys, no markdown.\n\n"
+        f"Input (English turns, JSON array, length={len(texts)}):\n"
+        f"{json.dumps(texts, ensure_ascii=False)}"
+    )
+
+    if provider != "openai":
+        raise ValueError(f"Unsupported provider: {provider}")
+    client = _get_openai_client()
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=int(api_cfg.get("max_tokens", 256)),
+                temperature=0.0,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            if not raw:
+                raise RuntimeError("Empty API response")
+            out_list = _parse_list_of_strings(raw)
+            if len(out_list) != len(texts):
+                raise ValueError(f"Length mismatch: expected {len(texts)} got {len(out_list)}")
+            return [x.strip() for x in out_list]
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries - 1:
+                time.sleep(sleep_sec)
+    raise last_err or RuntimeError("No response from API")
 
 
 def main():
@@ -203,42 +281,85 @@ def main():
                         out["emotions"] = rec["emotions"]
                     for lang in targets:
                         t_out = []
-                        for t in turns_en:
-                            # Cache key includes backend+model+generation settings so changing
-                            # translation settings doesn't reuse stale/bad cached outputs.
-                            cache_meta = {
-                                "backend": "api" if use_api else "local",
-                                "model": model_name,
-                                "lang": lang,
-                                "gen": {} if use_api else local_gen_cfg,
-                                "max_new_tokens": int(cfg.get("local", {}).get("max_new_tokens", 256)) if not use_api else int(cfg.get("api", {}).get("max_tokens", 256)),
-                            }
-                            key = sha256(json.dumps(cache_meta, sort_keys=True, ensure_ascii=True) + "\n" + t)
-                            c = cache_dir / f"{key}.txt"
-                            if c.exists():
-                                t_out.append(c.read_text(encoding="utf-8"))
-                                cache_hits += 1
-                            else:
-                                cache_misses += 1
+                        # For API backend, translate missing turns in one call per dialogue (per lang)
+                        # but still cache per-turn so re-runs are cheap.
+                        if use_api:
+                            t_out = [""] * len(turns_en)
+                            missing_idx = []
+                            missing_texts = []
+                            cache_paths = []
+                            for idx, t in enumerate(turns_en):
+                                cache_meta = {
+                                    "backend": "api",
+                                    "model": model_name,
+                                    "lang": lang,
+                                    "gen": {},
+                                    "max_new_tokens": int(cfg.get("api", {}).get("max_tokens", 256)),
+                                }
+                                key = sha256(json.dumps(cache_meta, sort_keys=True, ensure_ascii=True) + "\n" + t)
+                                c = cache_dir / f"{key}.txt"
+                                if c.exists():
+                                    t_out[idx] = c.read_text(encoding="utf-8")
+                                    cache_hits += 1
+                                else:
+                                    cache_misses += 1
+                                    missing_idx.append(idx)
+                                    missing_texts.append(t)
+                                    cache_paths.append(c)
+
+                            if missing_texts:
                                 try:
-                                    if use_api:
-                                        tr = translate_one_api(cfg, t, "en", lang)
-                                    else:
-                                        tr = translate_one_local(
-                                            model,
-                                            tok,
-                                            t,
-                                            "en",
-                                            lang,
-                                            device,
-                                            cfg["local"]["max_new_tokens"],
-                                            generation_kwargs=local_gen_cfg,
-                                        )
-                                    c.write_text(tr, encoding="utf-8")
-                                    t_out.append(tr)
+                                    translated = translate_many_api(cfg, missing_texts, "en", lang)
                                 except Exception:
-                                    out["translation_meta"]["quality_flags"].append(f"translate_fail_{lang}")
-                                    t_out.append("")
+                                    # Fallback to per-turn API calls if batch parsing fails.
+                                    translated = []
+                                    for t in missing_texts:
+                                        translated.append(translate_one_api(cfg, t, "en", lang))
+
+                                for idx, tr, c in zip(missing_idx, translated, cache_paths):
+                                    tr = (tr or "").strip()
+                                    c.write_text(tr, encoding="utf-8")
+                                    t_out[idx] = tr
+
+                        else:
+                            for t in turns_en:
+                                # Cache key includes backend+model+generation settings so changing
+                                # translation settings doesn't reuse stale/bad cached outputs.
+                                cache_meta = {
+                                    "backend": "api" if use_api else "local",
+                                    "model": model_name,
+                                    "lang": lang,
+                                    "gen": {} if use_api else local_gen_cfg,
+                                    "max_new_tokens": int(cfg.get("local", {}).get("max_new_tokens", 256))
+                                    if not use_api
+                                    else int(cfg.get("api", {}).get("max_tokens", 256)),
+                                }
+                                key = sha256(json.dumps(cache_meta, sort_keys=True, ensure_ascii=True) + "\n" + t)
+                                c = cache_dir / f"{key}.txt"
+                                if c.exists():
+                                    t_out.append(c.read_text(encoding="utf-8"))
+                                    cache_hits += 1
+                                else:
+                                    cache_misses += 1
+                                    try:
+                                        if use_api:
+                                            tr = translate_one_api(cfg, t, "en", lang)
+                                        else:
+                                            tr = translate_one_local(
+                                                model,
+                                                tok,
+                                                t,
+                                                "en",
+                                                lang,
+                                                device,
+                                                cfg["local"]["max_new_tokens"],
+                                                generation_kwargs=local_gen_cfg,
+                                            )
+                                        c.write_text(tr, encoding="utf-8")
+                                        t_out.append(tr)
+                                    except Exception:
+                                        out["translation_meta"]["quality_flags"].append(f"translate_fail_{lang}")
+                                        t_out.append("")
                         out[f"turns_{lang}"] = t_out
                         if len(t_out) != len(turns_en) or any(x == "" for x in t_out):
                             out["translation_meta"]["quality_flags"].append(f"integrity_{lang}")

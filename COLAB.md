@@ -94,16 +94,44 @@ Or use **Colab Secrets**: left sidebar → 🔑 **Secrets** → add `OPENAI_API_
 
 ## 5. Run pipeline (persistent because paths are on Drive)
 
-**Quick run (0.5B model, good for free Colab):**
+### A) End-to-end (1000-sample, Bangla-only)
+
+This matches the **800/200/200 dialogue** subset and produces Bangla-only SFT.
 
 ```bash
 !python src/01_download.py
-!python src/02_preprocess.py
-!TRANSLATION_BACKEND=api python src/03_translate.py --config configs/translation.yaml
-!python src/05_build_sft.py --config configs/translation.yaml
-!BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct python src/06_train_sft.py --config configs/training_quick.yaml
-!BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct python src/07_eval.py --config configs/eval_quick.yaml
+!python src/02_preprocess.py --config configs/preprocess_1000.yaml
+!TARGET_LANGS=bn TRANSLATION_BACKEND=api python src/03_translate.py --config configs/translation_1000_api_bn.yaml
+!TARGET_LANGS=bn python src/05_build_sft.py --config configs/translation_1000_api_bn.yaml
 ```
+
+### B) Teacher generation (Qwen 7B, GPU)
+
+If you already created the sampled SFT locally, upload these two files to Drive:
+
+- `${DATA_DIR}/sft/sampled_1000_bn/train.jsonl`
+- `${DATA_DIR}/sft/sampled_1000_bn/test.jsonl`
+
+Then run:
+
+```bash
+!python scripts/generate_teacher_sft.py \
+  --input "$DATA_DIR/sft/sampled_1000_bn/train.jsonl" \
+  --output "$DATA_DIR/sft/teacher_1000_bn/train.jsonl" \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --max-new-tokens 96 --temperature 0.0
+
+!python scripts/generate_teacher_sft.py \
+  --input "$DATA_DIR/sft/sampled_1000_bn/test.jsonl" \
+  --output "$DATA_DIR/sft/teacher_1000_bn/test.jsonl" \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --max-new-tokens 96 --temperature 0.0
+```
+
+Outputs:
+
+- `${DATA_DIR}/sft/teacher_1000_bn/train.jsonl` (800)
+- `${DATA_DIR}/sft/teacher_1000_bn/test.jsonl` (200)
 
 **Or with Make (one shell cell; env vars apply to make):**
 

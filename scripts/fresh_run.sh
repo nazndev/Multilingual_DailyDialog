@@ -50,26 +50,30 @@ echo "== [1/6] Download from Hugging Face =="
 "$PYTHON" src/01_download.py
 
 echo "== [2/6] Preprocess =="
-"$PYTHON" src/02_preprocess.py
+"$PYTHON" src/02_preprocess.py --config configs/preprocess_1000.yaml
 
 if [[ "$MODE" == full ]]; then
   echo "== [3/6] Translate =="
-  "$PYTHON" src/03_translate.py --config configs/translation.yaml
+  TARGET_LANGS=bn TRANSLATION_BACKEND=api "$PYTHON" src/03_translate.py --config configs/translation_1000_api_bn.yaml
+  echo "== [3.5/6] Quality checks =="
+  "$PYTHON" src/04_quality_checks.py --config configs/translation_1000_api_bn.yaml
   echo "== [4/6] Build SFT =="
-  "$PYTHON" src/05_build_sft.py --config configs/translation.yaml
+  TARGET_LANGS=bn "$PYTHON" src/05_build_sft.py --config configs/translation_1000_api_bn.yaml
   echo "== [5/6] Train SFT (LoRA) =="
-  "$PYTHON" src/06_train_sft.py --config configs/training_full.yaml
+  BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct "$PYTHON" src/06_train_sft.py --config configs/training_1000.yaml
   echo "== [6/6] Evaluate (Zero-shot + Fine-tuned) =="
-  "$PYTHON" src/07_eval.py --config configs/eval_full.yaml
+  BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct "$PYTHON" src/07_eval.py --config configs/eval_1000.yaml
 else
   echo "== [3/6] Translate =="
-  "$PYTHON" src/03_translate.py --config configs/translation.yaml
+  TARGET_LANGS=bn TRANSLATION_BACKEND=api "$PYTHON" src/03_translate.py --config configs/translation_1000_api_bn.yaml
+  echo "== [3.5/6] Quality checks =="
+  "$PYTHON" src/04_quality_checks.py --config configs/translation_1000_api_bn.yaml
   echo "== [4/6] Build SFT =="
-  "$PYTHON" src/05_build_sft.py --config configs/translation.yaml
+  TARGET_LANGS=bn "$PYTHON" src/05_build_sft.py --config configs/translation_1000_api_bn.yaml
   echo "== [5/6] Train SFT (LoRA) =="
-  "$PYTHON" src/06_train_sft.py --config configs/training.yaml
+  BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct "$PYTHON" src/06_train_sft.py --config configs/training_1000.yaml
   echo "== [6/6] Evaluate (Zero-shot + Fine-tuned) =="
-  "$PYTHON" src/07_eval.py --config configs/eval.yaml
+  BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct "$PYTHON" src/07_eval.py --config configs/eval_1000.yaml
 fi
 
 echo "DONE. Data in DATA_DIR, reports in REPORTS_DIR, adapter in OUTPUTS_DIR."

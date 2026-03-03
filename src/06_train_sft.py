@@ -30,7 +30,8 @@ def main():
         dirs = get_dirs()
         cfg = load_cfg(args.config)
         log_config_safely(logger, cfg, "config")
-        base = get_env("BASE_MODEL") or cfg["base_model"]
+        # Prefer the config's model for reproducibility; fall back to env only if config omits it.
+        base = cfg.get("base_model") or get_env("BASE_MODEL")
         data_cfg = cfg["data"]
         train_path = resolve_path(data_cfg["train_path"], dirs["data"])
         eval_path = resolve_path(data_cfg.get("eval_path", ""), dirs["data"]) if data_cfg.get("eval_path") else None

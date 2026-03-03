@@ -1,0 +1,22 @@
+# Eval for model trained with training_1000.yaml
+
+model:
+  base_model: Qwen/Qwen2.5-0.5B-Instruct
+  lora_adapter_dir: model_1000/lora_adapter
+
+data:
+  test_path: sft/multilingual_1000/test.jsonl
+
+evaluation:
+  # This samples N SFT examples (not dialogues). Increase if you want more coverage.
+  num_samples_per_lang: 200
+  langs: [bn]
+  compute_bleu: true
+  run_baseline: true
+  max_new_tokens: 96
+
+outputs:
+  report_path: eval_report_1000.md
+  include_samples: true
+  num_samples_per_lang: 5
+  samples_format: blocks
