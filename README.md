@@ -47,6 +47,8 @@ make translate-llm
 
 Then run steps 4–6 (Build SFT → Train → Eval) as usual. Translations are cached; same cache key for API and local so re-runs are cheap.
 
+**Manual translation (ChatGPT in the browser):** If you prefer to translate by pasting into ChatGPT instead of using the API, see [docs/MANUAL_TRANSLATION_CHATGPT.md](docs/MANUAL_TRANSLATION_CHATGPT.md) for which file to use, the exact prompt, and where to save the output so the rest of the pipeline works.
+
 ---
 
 ## Zero-shot vs Fine-tuned evaluation

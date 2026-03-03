@@ -47,7 +47,20 @@ def main():
             tok = AutoTokenizer.from_pretrained(base, use_fast=True)
             if tok.pad_token is None:
                 tok.pad_token = tok.eos_token
-            model = AutoModelForCausalLM.from_pretrained(base, device_map="auto")
+
+            # NOTE: Avoid device_map="auto" during training on Apple Silicon.
+            # It can offload parameters and leave some on the "meta" device, which
+            # then crashes backward on MPS (device mismatch).
+            if torch.cuda.is_available():
+                device = torch.device("cuda")
+            elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+                device = torch.device("mps")
+            else:
+                device = torch.device("cpu")
+
+            model = AutoModelForCausalLM.from_pretrained(base)
+            model.to(device)
+            logger.info("model_device=%s", device)
 
         if cfg["lora"]["enabled"]:
             lora = LoraConfig(

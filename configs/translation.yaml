@@ -7,7 +7,7 @@ local:
   max_new_tokens: 256
 api:
   provider: openai
-  model: gpt-5.2
+  model: gpt-4o-mini
   max_tokens: 256
   max_retries: 3
   sleep_between_retries_sec: 1

@@ -14,6 +14,8 @@ COLAB_ROOT = "/content/drive/MyDrive/Multilingual_DailyDialog"
 os.makedirs(COLAB_ROOT, exist_ok=True)
 
 os.environ["PIP_CACHE_DIR"] = f"{COLAB_ROOT}/pip-cache"
+os.environ["HF_HOME"] = f"{COLAB_ROOT}/hf-cache"
+os.environ["TRANSFORMERS_CACHE"] = f"{COLAB_ROOT}/hf-cache/transformers"
 os.environ["DATA_DIR"] = f"{COLAB_ROOT}/data"
 os.environ["CACHE_DIR"] = f"{COLAB_ROOT}/cache"
 os.environ["OUTPUTS_DIR"] = f"{COLAB_ROOT}/outputs"
@@ -45,7 +47,7 @@ subprocess.run("python src/05_build_sft.py --config configs/translation_100.yaml
 # Fine-tune (very short)
 subprocess.run("python src/06_train_sft.py --config configs/training_100.yaml", shell=True, cwd=REPO_DIR, env=env, check=True)
 
-# Eval report includes: metrics + side-by-side examples (Zero-shot vs Fine-tuned)
+# Eval report includes: metrics + side-by-side samples (Zero-shot vs Fine-tuned)
 subprocess.run("python src/07_eval.py --config configs/eval_100.yaml", shell=True, cwd=REPO_DIR, env=env, check=True)
 
 print("Done. Key artifacts:")
@@ -54,3 +56,9 @@ print("- Translated 100:", os.path.join(env["DATA_DIR"], "translated_dailydialog
 print("- SFT 100:", os.path.join(env["DATA_DIR"], "sft/multilingual_100"))
 print("- Adapter:", os.path.join(env["OUTPUTS_DIR"], "model_100/lora_adapter"))
 print("- Report:", os.path.join(env["REPORTS_DIR"], "eval_report_100.md"))
+
+# Print the report content (handy for live demo)
+report_path = os.path.join(env["REPORTS_DIR"], "eval_report_100.md")
+print("\n===== eval_report_100.md =====\n")
+with open(report_path, "r", encoding="utf-8") as f:
+    print(f.read())

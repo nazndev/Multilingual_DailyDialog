@@ -1,4 +1,3 @@
-# From instructions.yml run_commands.setup + PyYAML for configs
 datasets>=2.14.0
 transformers>=4.36.0
 accelerate>=0.25.0

@@ -4,9 +4,15 @@ Use Google Drive so **data**, **trained adapter**, and **reports** survive after
 
 ---
 
-## 1. New notebook, enable GPU
+## 1. New notebook, set runtime type
 
-- [colab.new](https://colab.new) → **Runtime** → **Change runtime type** → **T4 GPU** (or A100 if available) → Save.
+- [colab.new](https://colab.new) (or open your `Multilingual_DailyDialog.ipynb`).
+- **Runtime** → **Change runtime type**.
+- In the dialog:
+  - **Runtime type:** `Python 3`
+  - **Hardware accelerator:** `T4 GPU` (free; or `A100 GPU` / `L4 GPU` if you have compute units)
+  - **Runtime version:** `Latest (recommended)`
+- Click **Save**.
 
 ---
 
@@ -21,6 +27,9 @@ import os
 COLAB_ROOT = "/content/drive/MyDrive/Multilingual_DailyDialog"
 os.makedirs(COLAB_ROOT, exist_ok=True)
 
+# Optional but recommended: persist pip's download cache on Drive to speed up re-installs
+os.environ["PIP_CACHE_DIR"] = f"{COLAB_ROOT}/pip-cache"
+
 # Point pipeline to Drive so everything is saved there
 os.environ["DATA_DIR"]   = f"{COLAB_ROOT}/data"
 os.environ["CACHE_DIR"]  = f"{COLAB_ROOT}/cache"
@@ -30,14 +39,37 @@ os.environ["REPORTS_DIR"] = f"{COLAB_ROOT}/reports"
 
 ---
 
-## 3. Clone repo and install
+## 3. Get the code + install deps
+
+You have two good options:
+
+### Option A (fast filesystem): clone into `/content` each session
+
+This is usually the fastest to *run* (Colab local disk), but you’ll re-clone every runtime.
 
 ```bash
 %cd /content
+!rm -rf Multilingual_DailyDialog
 !git clone https://github.com/nazndev/Multilingual_DailyDialog.git
 %cd Multilingual_DailyDialog
+!pip install -q -r requirements.txt
+```
 
-!pip install -r requirements.txt
+### Option B (persistent): keep the git clone on Drive and `git pull`
+
+This avoids re-cloning when you come back later. It can be slightly slower at runtime because Drive I/O is slower than `/content`, but for this repo it’s usually fine.
+
+```python
+import os
+REPO_DIR = f"{COLAB_ROOT}/repo"
+
+if not os.path.exists(REPO_DIR):
+  !git clone https://github.com/nazndev/Multilingual_DailyDialog.git "$REPO_DIR"
+else:
+  !git -C "$REPO_DIR" pull
+
+%cd "$REPO_DIR"
+!pip install -q -r requirements.txt
 ```
 
 ---
