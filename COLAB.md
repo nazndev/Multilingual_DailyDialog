@@ -107,31 +107,34 @@ This matches the **800/200/200 dialogue** subset and produces Bangla-only SFT.
 
 ### B) Teacher generation (Qwen 7B, GPU)
 
-If you already created the sampled SFT locally, upload these two files to Drive:
+For **dialogue-based** distillation (recommended): use the existing split that already corresponds to
+**800 train dialogues** and **200 test dialogues**, while keeping **all assistant turns** from each dialogue.
 
-- `${DATA_DIR}/sft/sampled_1000_bn/train.jsonl`
-- `${DATA_DIR}/sft/sampled_1000_bn/test.jsonl`
+Upload these two files to Drive (or generate them via Step A above):
+
+- `${DATA_DIR}/sft/multilingual_1000/train.jsonl`  (all SFT rows from 800 dialogues)
+- `${DATA_DIR}/sft/multilingual_1000/test.jsonl`   (all SFT rows from 200 dialogues)
 
 Then run:
 
 ```bash
 !python scripts/generate_teacher_sft.py \
-  --input "$DATA_DIR/sft/sampled_1000_bn/train.jsonl" \
-  --output "$DATA_DIR/sft/teacher_1000_bn/train.jsonl" \
+  --input "$DATA_DIR/sft/multilingual_1000/train.jsonl" \
+  --output "$DATA_DIR/sft/teacher_dialogue_1000_bn/train.jsonl" \
   --model Qwen/Qwen2.5-7B-Instruct \
   --max-new-tokens 96 --temperature 0.0
 
 !python scripts/generate_teacher_sft.py \
-  --input "$DATA_DIR/sft/sampled_1000_bn/test.jsonl" \
-  --output "$DATA_DIR/sft/teacher_1000_bn/test.jsonl" \
+  --input "$DATA_DIR/sft/multilingual_1000/test.jsonl" \
+  --output "$DATA_DIR/sft/teacher_dialogue_1000_bn/test.jsonl" \
   --model Qwen/Qwen2.5-7B-Instruct \
   --max-new-tokens 96 --temperature 0.0
 ```
 
 Outputs:
 
-- `${DATA_DIR}/sft/teacher_1000_bn/train.jsonl` (800)
-- `${DATA_DIR}/sft/teacher_1000_bn/test.jsonl` (200)
+- `${DATA_DIR}/sft/teacher_dialogue_1000_bn/train.jsonl` (rows correspond to all turns from 800 dialogues)
+- `${DATA_DIR}/sft/teacher_dialogue_1000_bn/test.jsonl` (rows correspond to all turns from 200 dialogues)
 
 **Or with Make (one shell cell; env vars apply to make):**
 
