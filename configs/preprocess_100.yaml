@@ -1,0 +1,7 @@
+# Preprocess only 100 dialogues per split for a very fast demo.
+# Paths are resolved relative to DATA_DIR.
+
+raw_dir: raw
+processed_dir: processed_100
+
+max_dialogues_per_split: 100

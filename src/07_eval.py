@@ -31,11 +31,39 @@ def get_reference(rec):
     return ""
 
 
+def _format_prompt(rec, max_chars: int = 800) -> str:
+    messages = rec.get("messages") or []
+    msgs = messages[:-1] if messages else []
+    parts = []
+    for m in msgs:
+        role = (m.get("role") or "").strip()
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "system":
+            parts.append(f"[system] {content}")
+        elif role == "user":
+            parts.append(f"[user] {content}")
+        elif role == "assistant":
+            parts.append(f"[assistant] {content}")
+        else:
+            parts.append(content)
+    s = "\n".join(parts).strip()
+    if len(s) > max_chars:
+        s = s[: max_chars - 3] + "..."
+    return s
+
+
 def run_model_on_buckets(model, tok, buckets, langs, max_new_tokens=128):
-    results = {l: {"refs": [], "hyps": [], "langid_ok": 0} for l in langs}
+    results = {l: {"refs": [], "hyps": [], "prompts": [], "meta": [], "langid_ok": 0} for l in langs}
     for l in langs:
         for rec in buckets[l]:
             ref = get_reference(rec)
+            prompt_str = _format_prompt(rec)
+            meta = {
+                "dialogue_id": rec.get("dialogue_id"),
+                "turn_index": rec.get("turn_index"),
+            }
             messages = rec["messages"][:-1] if rec.get("messages") else []
             prompt_ids = tok.apply_chat_template(
                 messages, add_generation_prompt=True, return_tensors="pt"
@@ -49,6 +77,8 @@ def run_model_on_buckets(model, tok, buckets, langs, max_new_tokens=128):
             gen = tok.decode(new_ids, skip_special_tokens=True).strip()
             results[l]["refs"].append(ref)
             results[l]["hyps"].append(gen)
+            results[l]["prompts"].append(prompt_str)
+            results[l]["meta"].append(meta)
             try:
                 dl = detect(gen[:200]) if gen else "unknown"
             except Exception:
@@ -56,6 +86,42 @@ def run_model_on_buckets(model, tok, buckets, langs, max_new_tokens=128):
             if dl == l:
                 results[l]["langid_ok"] += 1
     return results
+
+
+def _append_examples(lines, title: str, langs: list, base_results: dict, lora_results: dict, max_examples: int = 3):
+    lines.append(f"## {title}\n\n")
+    for l in langs:
+        lines.append(f"### {l}\n\n")
+        n = min(
+            max_examples,
+            len(base_results.get(l, {}).get("hyps", [])) if base_results else 0,
+            len(lora_results.get(l, {}).get("hyps", [])) if lora_results else 0,
+        )
+        if n <= 0:
+            lines.append("*(No samples available.)*\n\n")
+            continue
+        for i in range(n):
+            prompt = (base_results[l].get("prompts") or [""])[i]
+            meta = (base_results[l].get("meta") or [{}])[i] or {}
+            ref = (base_results[l].get("refs") or [""])[i]
+            zh = (base_results[l].get("hyps") or [""])[i]
+            fh = (lora_results[l].get("hyps") or [""])[i]
+            did = meta.get("dialogue_id") or "unknown"
+            tidx = meta.get("turn_index")
+            lines.append(f"**Sample {i+1}**\n\n")
+            lines.append(f"- dialogue_id: `{did}`\n")
+            lines.append(f"- turn_index: `{tidx}`\n\n")
+            if prompt:
+                lines.append("Prompt:\n\n")
+                lines.append("```\n" + prompt + "\n```\n\n")
+            if ref:
+                lines.append("Reference (gold):\n\n")
+                lines.append("```\n" + ref + "\n```\n\n")
+            lines.append("Zero-shot output:\n\n")
+            lines.append("```\n" + (zh or "") + "\n```\n\n")
+            lines.append("Fine-tuned (LoRA) output:\n\n")
+            lines.append("```\n" + (fh or "") + "\n```\n\n")
+        lines.append("\n")
 
 
 def compute_bleu(refs, hyps):
@@ -91,6 +157,9 @@ def main():
         run_baseline = cfg.get("evaluation", {}).get("run_baseline", False)
         compute_bleu_flag = cfg.get("evaluation", {}).get("compute_bleu", True)
         max_new_tokens = int(cfg.get("evaluation", {}).get("max_new_tokens", 128))
+        out_cfg = cfg.get("outputs", {}) or {}
+        include_examples = bool(out_cfg.get("include_samples", out_cfg.get("include_examples", False)))
+        num_examples = int(out_cfg.get("num_samples_per_lang", out_cfg.get("num_examples_per_lang", 3)))
         env_targets = get_langs()["targets"]
         langs = env_targets if env_targets else cfg["evaluation"]["langs"]
         n = int(cfg["evaluation"]["num_samples_per_lang"])
@@ -113,6 +182,8 @@ def main():
             model = AutoModelForCausalLM.from_pretrained(base, device_map="auto")
 
         lines = ["# Evaluation Report: Zero-shot vs Fine-tuned\n\n"]
+
+        base_results = None
 
         # Zero-shot: base model only (no LoRA)
         if run_baseline:
@@ -162,6 +233,16 @@ def main():
                 if overall_bleu is not None:
                     lines.append("### Overall\n")
                     lines.append(f"- BLEU (all languages): {overall_bleu}\n\n")
+
+        if include_examples and run_baseline and base_results is not None and adapter and adapter.exists():
+            _append_examples(
+                lines,
+                title="Samples (from test set): Zero-shot vs Fine-tuned",
+                langs=langs,
+                base_results=base_results,
+                lora_results=lora_results,
+                max_examples=num_examples,
+            )
 
         report_path = cfg["outputs"].get("report_path", "eval_report.md")
         out_path = resolve_path(report_path, dirs["reports"])

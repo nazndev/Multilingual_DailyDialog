@@ -1,0 +1,31 @@
+# Train (100-row demo): points to sft/multilingual_100 produced by translation_100.yaml
+# Keep this extremely small for a live classroom demo.
+
+base_model: Qwen/Qwen2.5-0.5B-Instruct
+
+data:
+  train_path: sft/multilingual_100/train.jsonl
+  eval_path: sft/multilingual_100/validation.jsonl
+
+training:
+  seed: 42
+  max_seq_len: 512
+  num_train_epochs: 1
+  max_steps: 10
+  learning_rate: 2.0e-4
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 2
+  warmup_ratio: 0.03
+  logging_steps: 1
+  save_steps: 5
+  output_dir: model_100
+
+lora:
+  enabled: true
+  r: 8
+  alpha: 16
+  dropout: 0.05
+
+precision:
+  bf16: auto
+  fp16: auto

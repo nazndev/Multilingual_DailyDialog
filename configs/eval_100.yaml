@@ -1,0 +1,20 @@
+# Eval for model trained with training_100.yaml (fast demo)
+
+model:
+  base_model: Qwen/Qwen2.5-0.5B-Instruct
+  lora_adapter_dir: model_100/lora_adapter
+
+data:
+  test_path: sft/multilingual_100/test.jsonl
+
+evaluation:
+  num_samples_per_lang: 10
+  langs: [bn]
+  compute_bleu: false
+  run_baseline: true
+  max_new_tokens: 96
+
+outputs:
+  report_path: eval_report_100.md
+  include_samples: true
+  num_samples_per_lang: 3

@@ -1,0 +1,38 @@
+# Translation (100-row demo): use processed_100 (generated from raw with preprocess_100).
+# Backend: local = NLLB; for GPT set TRANSLATION_BACKEND=api and OPENAI_API_KEY.
+
+backend: local
+
+local:
+  model_name: facebook/nllb-200-distilled-600M
+  device: auto
+  batch_size: 16
+  max_new_tokens: 192
+
+api:
+  provider: openai
+  model: gpt-4o-mini
+  max_tokens: 192
+  max_retries: 3
+  sleep_between_retries_sec: 1
+
+# Note: actual targets are overridden by env TARGET_LANGS if set; default in this repo is bn.
+targets: [bn]
+
+# Safety cap at translation time
+max_dialogues_per_split: 100
+
+processed_dir: processed_100
+out_dir: translated_dailydialog_en_bn_100
+
+cache:
+  enabled: true
+  dir: cache/translations
+
+quality:
+  length_ratio_min: 0.4
+  length_ratio_max: 3.0
+  max_chars_per_turn: 800
+
+# Used by 05_build_sft.py
+sft_dir: sft/multilingual_100
