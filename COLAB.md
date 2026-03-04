@@ -2,6 +2,8 @@
 
 Use Google Drive so **data**, **trained adapter**, and **reports** survive after the runtime disconnects.
 
+**Professor checklist (100%):** (1) Translate dialogue EN→Bangla, keep act/emotion ✓ (2) Qwen 7B generates ground truth for translation ✓ (3) Fine-tune Qwen 0.5B ✓ (4) Zero-shot vs fine-tune ✓ — Train 800, test 200, zero-shot vs fine-tune report on 1000 samples ✓ (section 5).
+
 ---
 
 ## 1. New notebook, set runtime type
@@ -52,7 +54,12 @@ This is usually the fastest to *run* (Colab local disk), but you’ll re-clone e
 !rm -rf Multilingual_DailyDialog
 !git clone https://github.com/nazndev/Multilingual_DailyDialog.git
 %cd Multilingual_DailyDialog
-!pip install -q -r requirements.txt
+
+# Colab already includes a CUDA-enabled PyTorch build.
+# Installing `torch` via pip can silently replace it with a CPU-only wheel.
+!grep -vE '^\s*torch\b' requirements.txt > /tmp/requirements_no_torch.txt
+!pip install -q -r /tmp/requirements_no_torch.txt
+!pip install -q sentencepiece protobuf
 ```
 
 ### Option B (persistent): keep the git clone on Drive and `git pull`
@@ -69,7 +76,12 @@ else:
   !git -C "$REPO_DIR" pull
 
 %cd "$REPO_DIR"
-!pip install -q -r requirements.txt
+
+# Colab already includes a CUDA-enabled PyTorch build.
+# Installing `torch` via pip can silently replace it with a CPU-only wheel.
+!grep -vE '^\s*torch\b' requirements.txt > /tmp/requirements_no_torch.txt
+!pip install -q -r /tmp/requirements_no_torch.txt
+!pip install -q sentencepiece protobuf
 ```
 
 ---
@@ -92,11 +104,66 @@ Or use **Colab Secrets**: left sidebar → 🔑 **Secrets** → add `OPENAI_API_
 
 ---
 
-## 5. Run pipeline (persistent because paths are on Drive)
+## 5. Professor pipeline (100% — Colab-ready)
 
-### A) End-to-end (1000-sample, Bangla-only)
+**Requirements:** Translate EN→Bangla (keep act/emotion) → Qwen 7B ground truth → Fine-tune Qwen 0.5B → Zero-shot vs fine-tune. **Train: 800, Test: 200, Zero-shot vs fine-tune report: 1000 samples.**
 
-This matches the **800/200/200 dialogue** subset and produces Bangla-only SFT.
+Ensure **Runtime → Change runtime type → Hardware accelerator: T4 GPU** (or A100/L4). Set `DATA_DIR`, `OUTPUTS_DIR`, `REPORTS_DIR`, `CACHE_DIR` in section 2, then `%cd` into the repo (section 3). Run each block in order.
+
+### 5.1 Download + preprocess (800 train, 200 test)
+
+```bash
+!python src/01_download.py
+!python src/02_preprocess.py --config configs/preprocess_1000.yaml
+```
+
+### 5.2 Translate to Bangla (keep dialog_acts + emotions)
+
+Set `OPENAI_API_KEY` and `TRANSLATION_BACKEND=api` in section 4 if using API.
+
+```bash
+!TARGET_LANGS=bn TRANSLATION_BACKEND=api python src/03_translate.py --config configs/translation_1000_api_bn.yaml
+```
+
+### 5.3 Build turn-level SFT, then dialogue-level (800 + 200)
+
+```bash
+!TARGET_LANGS=bn python src/05_build_sft.py --config configs/translation_1000_api_bn.yaml
+!python scripts/build_dialogue_sft.py --input "$DATA_DIR/sft/multilingual_1000/train.jsonl" --output "$DATA_DIR/sft/dialogue_1000_bn/train.jsonl"
+!python scripts/build_dialogue_sft.py --input "$DATA_DIR/sft/multilingual_1000/test.jsonl" --output "$DATA_DIR/sft/dialogue_1000_bn/test.jsonl"
+```
+
+### 5.4 Qwen 7B teacher ground truth (GPU)
+
+```bash
+!python scripts/generate_teacher_sft.py --input "$DATA_DIR/sft/dialogue_1000_bn/train.jsonl" --output "$DATA_DIR/sft/teacher_dialogue_1000_bn/train.jsonl" --model Qwen/Qwen2.5-7B-Instruct --max-new-tokens 96 --temperature 0.0
+!python scripts/generate_teacher_sft.py --input "$DATA_DIR/sft/dialogue_1000_bn/test.jsonl" --output "$DATA_DIR/sft/teacher_dialogue_1000_bn/test.jsonl" --model Qwen/Qwen2.5-7B-Instruct --max-new-tokens 96 --temperature 0.0
+```
+
+### 5.5 Fine-tune Qwen 0.5B on 800 teacher-labeled examples
+
+```bash
+!python src/06_train_sft.py --config configs/training_teacher_dialogue_1000.yaml
+```
+
+### 5.6 Zero-shot vs fine-tuned (200 test)
+
+```bash
+!python src/07_eval.py --config configs/eval_teacher_dialogue_1000.yaml
+```
+
+### 5.7 Zero-shot vs fine-tuned on 1000 samples (professor report)
+
+```bash
+!cat "$DATA_DIR/sft/teacher_dialogue_1000_bn/train.jsonl" "$DATA_DIR/sft/teacher_dialogue_1000_bn/test.jsonl" > "$DATA_DIR/sft/teacher_dialogue_1000_bn/all_1000.jsonl"
+!python src/07_eval.py --config configs/eval_teacher_dialogue_1000_all.yaml
+```
+
+Reports: `$REPORTS_DIR/eval_report_teacher_dialogue_1000.md` (200 test), `$REPORTS_DIR/eval_report_teacher_dialogue_1000_all.md` (1000 samples).
+
+---
+
+### A) Quick data-only (no teacher/train): Bangla SFT from translation
 
 ```bash
 !python src/01_download.py
@@ -105,46 +172,9 @@ This matches the **800/200/200 dialogue** subset and produces Bangla-only SFT.
 !TARGET_LANGS=bn python src/05_build_sft.py --config configs/translation_1000_api_bn.yaml
 ```
 
-### B) Teacher generation (Qwen 7B, GPU)
+### B) If you already have `dialogue_1000_bn` (e.g. from another run)
 
-For **dialogue-based (exact 800/200 examples)** distillation: use one SFT row per dialogue.
-
-Upload these two files to Drive (or generate them locally and copy to Drive):
-
-- `${DATA_DIR}/sft/dialogue_1000_bn/train.jsonl` (800)
-- `${DATA_DIR}/sft/dialogue_1000_bn/test.jsonl` (200)
-
-Then run:
-
-```bash
-!python scripts/generate_teacher_sft.py \
-  --input "$DATA_DIR/sft/dialogue_1000_bn/train.jsonl" \
-  --output "$DATA_DIR/sft/teacher_dialogue_1000_bn/train.jsonl" \
-  --model Qwen/Qwen2.5-7B-Instruct \
-  --max-new-tokens 96 --temperature 0.0
-
-!python scripts/generate_teacher_sft.py \
-  --input "$DATA_DIR/sft/dialogue_1000_bn/test.jsonl" \
-  --output "$DATA_DIR/sft/teacher_dialogue_1000_bn/test.jsonl" \
-  --model Qwen/Qwen2.5-7B-Instruct \
-  --max-new-tokens 96 --temperature 0.0
-```
-
-Outputs:
-
-- `${DATA_DIR}/sft/teacher_dialogue_1000_bn/train.jsonl` (800)
-- `${DATA_DIR}/sft/teacher_dialogue_1000_bn/test.jsonl` (200)
-
-**Or with Make (one shell cell; env vars apply to make):**
-
-```bash
-export DATA_DIR="/content/drive/MyDrive/Multilingual_DailyDialog/data"
-export OUTPUTS_DIR="/content/drive/MyDrive/Multilingual_DailyDialog/outputs"
-export REPORTS_DIR="/content/drive/MyDrive/Multilingual_DailyDialog/reports"
-export CACHE_DIR="/content/drive/MyDrive/Multilingual_DailyDialog/cache"
-make quick-small
-```
-(In Colab, run as `!bash -c 'export DATA_DIR=...; ...; make quick-small'` or run each `export` and `make` in one cell.)
+Skip 5.1–5.3 and run 5.4–5.7 only. Inputs: `$DATA_DIR/sft/dialogue_1000_bn/train.jsonl` (800), `$DATA_DIR/sft/dialogue_1000_bn/test.jsonl` (200).
 
 ---
 
