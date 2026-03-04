@@ -1,8 +1,4 @@
-# Preprocess a capped subset including validation:
-# - 800 train
-# - 200 validation
-# - 200 test
-# (Total 1200 dialogues.)
+# Spec: 800 train, 200 test (1000 dialogues total).
 # Paths are resolved relative to DATA_DIR.
 
 raw_dir: raw
@@ -10,5 +6,5 @@ processed_dir: processed_1000
 
 max_dialogues_per_split:
   train: 800
-  validation: 200
+  validation: 0
   test: 200

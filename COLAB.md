@@ -2,7 +2,12 @@
 
 Use Google Drive so **data**, **trained adapter**, and **reports** survive after the runtime disconnects.
 
-**Professor checklist (100%):** (1) Translate dialogue EN→Bangla, keep act/emotion ✓ (2) Qwen 7B generates ground truth for translation ✓ (3) Fine-tune Qwen 0.5B ✓ (4) Zero-shot vs fine-tune ✓ — Train 800, test 200, zero-shot vs fine-tune report on 1000 samples ✓ (section 5).
+**Checklist:** 
+(1) Translate dialogue EN→Bangla, keep act/emotion ✓ 
+(2) Qwen 7B generates ground truth for translation ✓ 
+(3) Fine-tune Qwen 0.5B ✓ 
+(4) Zero-shot vs fine-tune ✓ 
+  — Train 800, test 200, zero-shot vs fine-tune report on 1000 samples ✓ (section 5).
 
 ---
 
@@ -104,7 +109,7 @@ Or use **Colab Secrets**: left sidebar → 🔑 **Secrets** → add `OPENAI_API_
 
 ---
 
-## 5. Professor pipeline (100% — Colab-ready)
+## 5. Pipeline (100% — Colab-ready)
 
 **Requirements:** Translate EN→Bangla (keep act/emotion) → Qwen 7B ground truth → Fine-tune Qwen 0.5B → Zero-shot vs fine-tune. **Train: 800, Test: 200, Zero-shot vs fine-tune report: 1000 samples.**
 
@@ -131,6 +136,49 @@ Set `OPENAI_API_KEY` and `TRANSLATION_BACKEND=api` in section 4 if using API.
 !TARGET_LANGS=bn python src/05_build_sft.py --config configs/translation_1000_api_bn.yaml
 !python scripts/build_dialogue_sft.py --input "$DATA_DIR/sft/multilingual_1000/train.jsonl" --output "$DATA_DIR/sft/dialogue_1000_bn/train.jsonl"
 !python scripts/build_dialogue_sft.py --input "$DATA_DIR/sft/multilingual_1000/test.jsonl" --output "$DATA_DIR/sft/dialogue_1000_bn/test.jsonl"
+```
+
+### 5.3b (optional) Sanity-check subset alignment (800/200/1000)
+
+```python
+import os, json
+from pathlib import Path
+
+DATA_DIR = Path(os.environ["DATA_DIR"])
+
+def load_jsonl(path: Path):
+    rows = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+en = load_jsonl(DATA_DIR / "processed_1000" / "train_en.jsonl")
+bn = load_jsonl(DATA_DIR / "translated_api_1000_bn" / "train.jsonl")
+sft_train = load_jsonl(DATA_DIR / "sft" / "dialogue_1000_bn" / "train.jsonl")
+sft_test = load_jsonl(DATA_DIR / "sft" / "dialogue_1000_bn" / "test.jsonl")
+
+print("lens (en, bn, sft_train, sft_test):", len(en), len(bn), len(sft_train), len(sft_test))
+
+ids_en = {r["dialogue_id"] for r in en}
+ids_bn = {r["dialogue_id"] for r in bn}
+ids_sft_train = {r["dialogue_id"] for r in sft_train}
+ids_sft_test = {r["dialogue_id"] for r in sft_test}
+
+print("unique ids (en, bn, sft_train, sft_test):", len(ids_en), len(ids_bn), len(ids_sft_train), len(ids_sft_test))
+print("sft_train subset of en?", ids_sft_train <= ids_en)
+print("sft_train subset of bn?", ids_sft_train <= ids_bn)
+
+for r in sft_train[:3]:
+    did = r.get("dialogue_id", "")[:8]
+    msgs = r.get("messages") or []
+    lang = r.get("lang")
+    print(f"  did={did} lang={lang} msg_len={len(msgs)}")
+    if msgs:
+        print("    system:", msgs[0])
+        print("    first user/assistant:", msgs[1:3])
 ```
 
 ### 5.4 Qwen 7B teacher ground truth (GPU)
