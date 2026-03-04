@@ -31,6 +31,20 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
+def _make_attention_mask(input_ids: torch.Tensor, pad_token_id: int | None) -> torch.Tensor:
+    """Create a safe attention mask.
+
+    For most chat-template use here (batch_size=1, no padding), an all-ones mask is fine.
+    If padding is present and pad_token_id is known, mask padded positions out.
+    """
+
+    if pad_token_id is None:
+        return torch.ones_like(input_ids, dtype=torch.long)
+    # If pad_token_id equals eos_token_id, padding detection can be ambiguous.
+    # Still, this is better than omitting the attention mask entirely.
+    return (input_ids != pad_token_id).long()
+
+
 def _pick_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
@@ -71,6 +85,11 @@ def _write_jsonl(path: Path, recs):
             w.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+def _open_jsonl_writer(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return open(path, "w", encoding="utf-8")
+
+
 @torch.inference_mode()
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -81,6 +100,8 @@ def main() -> None:
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--top-p", type=float, default=1.0)
     ap.add_argument("--batch-size", type=int, default=1)
+    ap.add_argument("--print-every", type=int, default=50)
+    ap.add_argument("--flush-every", type=int, default=10)
     ap.add_argument("--limit", type=int, default=0, help="Optional limit for quick smoke runs")
     args = ap.parse_args()
 
@@ -103,72 +124,80 @@ def main() -> None:
         model.to(device)
     model.eval()
 
-    out_recs = []
-    n = 0
-    for rec in _iter_jsonl(in_path):
-        n += 1
-        if args.limit and n > args.limit:
-            break
+    # Stream output so users can monitor progress via wc -l while running.
+    written = 0
+    seen = 0
+    with _open_jsonl_writer(out_path) as out_f:
+        for rec in _iter_jsonl(in_path):
+            seen += 1
+            if args.limit and seen > args.limit:
+                break
 
-        messages = rec.get("messages") or []
-        if not messages:
-            continue
+            messages = rec.get("messages") or []
+            if not messages:
+                continue
 
-        # Prompt = everything except the last assistant label.
-        prompt_messages = messages[:-1]
-        if not prompt_messages:
-            continue
+            # Prompt = everything except the last assistant label.
+            prompt_messages = messages[:-1]
+            if not prompt_messages:
+                continue
 
-        enc = tok.apply_chat_template(prompt_messages, add_generation_prompt=True, return_tensors="pt")
-        input_ids = enc["input_ids"] if isinstance(enc, dict) else getattr(enc, "input_ids", enc)
-        attention_mask = enc.get("attention_mask") if isinstance(enc, dict) else None
+            enc = tok.apply_chat_template(prompt_messages, add_generation_prompt=True, return_tensors="pt")
+            input_ids = enc["input_ids"] if isinstance(enc, dict) else getattr(enc, "input_ids", enc)
+            attention_mask = enc.get("attention_mask") if isinstance(enc, dict) else None
 
-        input_ids = input_ids.to(device)
-        if attention_mask is not None:
-            attention_mask = attention_mask.to(device)
+            input_ids = input_ids.to(device)
+            if attention_mask is None:
+                attention_mask = _make_attention_mask(input_ids, tok.pad_token_id).to(device)
+            else:
+                attention_mask = attention_mask.to(device)
 
-        prompt_len = input_ids.shape[1]
-        gen_kwargs = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "max_new_tokens": int(args.max_new_tokens),
-            "pad_token_id": tok.pad_token_id or tok.eos_token_id,
-        }
-        if args.temperature and args.temperature > 0.0:
-            gen_kwargs.update(
-                {
-                    "do_sample": True,
-                    "temperature": float(args.temperature),
-                    "top_p": float(args.top_p),
-                }
-            )
-        gen_ids = model.generate(**gen_kwargs)
-        new_ids = gen_ids[0][prompt_len:]
-        teacher_text = tok.decode(new_ids, skip_special_tokens=True).strip()
+            prompt_len = input_ids.shape[1]
+            gen_kwargs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "max_new_tokens": int(args.max_new_tokens),
+                "pad_token_id": tok.pad_token_id or tok.eos_token_id,
+            }
+            if args.temperature and args.temperature > 0.0:
+                gen_kwargs.update(
+                    {
+                        "do_sample": True,
+                        "temperature": float(args.temperature),
+                        "top_p": float(args.top_p),
+                    }
+                )
+            gen_ids = model.generate(**gen_kwargs)
+            new_ids = gen_ids[0][prompt_len:]
+            teacher_text = tok.decode(new_ids, skip_special_tokens=True).strip()
 
-        new_rec = dict(rec)
-        # Keep original as optional reference.
-        try:
-            last = (messages[-1] or {})
-            if isinstance(last, dict) and last.get("role") == "assistant":
-                new_rec["reference_original"] = (last.get("content") or "")
-        except Exception:
-            pass
+            new_rec = dict(rec)
+            # Keep original as optional reference.
+            try:
+                last = (messages[-1] or {})
+                if isinstance(last, dict) and last.get("role") == "assistant":
+                    new_rec["reference_original"] = (last.get("content") or "")
+            except Exception:
+                pass
 
-        new_rec["messages"] = list(prompt_messages) + [{"role": "assistant", "content": teacher_text}]
-        new_rec["teacher_meta"] = {
-            "model": args.model,
-            "max_new_tokens": int(args.max_new_tokens),
-            "temperature": float(args.temperature),
-            "top_p": float(args.top_p),
-        }
-        out_recs.append(new_rec)
+            new_rec["messages"] = list(prompt_messages) + [{"role": "assistant", "content": teacher_text}]
+            new_rec["teacher_meta"] = {
+                "model": args.model,
+                "max_new_tokens": int(args.max_new_tokens),
+                "temperature": float(args.temperature),
+                "top_p": float(args.top_p),
+            }
 
-        if n % 50 == 0:
-            print(f"Generated {n} teacher examples...")
+            out_f.write(json.dumps(new_rec, ensure_ascii=False) + "\n")
+            written += 1
 
-    _write_jsonl(out_path, out_recs)
-    print(f"Wrote {len(out_recs)} teacher examples to {out_path}")
+            if args.flush_every and written % int(args.flush_every) == 0:
+                out_f.flush()
+
+            if args.print_every and written % int(args.print_every) == 0:
+                print(f"Generated {written} teacher examples...")
+
+    print(f"Wrote {written} teacher examples to {out_path}")
 
 
 if __name__ == "__main__":

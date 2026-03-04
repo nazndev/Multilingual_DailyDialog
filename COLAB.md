@@ -183,9 +183,16 @@ for r in sft_train[:3]:
 
 ### 5.4 Qwen 7B teacher ground truth (GPU)
 
-```bash
-!python scripts/generate_teacher_sft.py --input "$DATA_DIR/sft/dialogue_1000_bn/train.jsonl" --output "$DATA_DIR/sft/teacher_dialogue_1000_bn/train.jsonl" --model Qwen/Qwen2.5-7B-Instruct --max-new-tokens 96 --temperature 0.0
-!python scripts/generate_teacher_sft.py --input "$DATA_DIR/sft/dialogue_1000_bn/test.jsonl" --output "$DATA_DIR/sft/teacher_dialogue_1000_bn/test.jsonl" --model Qwen/Qwen2.5-7B-Instruct --max-new-tokens 96 --temperature 0.0
+```python
+import os
+
+OUT_DIR = os.path.join(os.environ["DATA_DIR"], "sft", "teacher_dialogue_1000_bn")
+os.makedirs(OUT_DIR, exist_ok=True)
+
+!python3 scripts/generate_teacher_sft.py --input "$DATA_DIR/sft/dialogue_1000_bn/train.jsonl" --output "{OUT_DIR}/train.jsonl" --model Qwen/Qwen2.5-7B-Instruct --max-new-tokens 96 --temperature 0.0
+!python3 scripts/generate_teacher_sft.py --input "$DATA_DIR/sft/dialogue_1000_bn/test.jsonl" --output "{OUT_DIR}/test.jsonl" --model Qwen/Qwen2.5-7B-Instruct --max-new-tokens 96 --temperature 0.0
+
+!wc -l "{OUT_DIR}/train.jsonl" "{OUT_DIR}/test.jsonl"
 ```
 
 ### 5.5 Fine-tune Qwen 0.5B on 800 teacher-labeled examples
