@@ -7,13 +7,19 @@ from typing import Any, Optional
 # Default template: explicit, short-reply oriented; {lang} is substituted per record.
 DEFAULT_SYSTEM_TEMPLATE = (
     "You are an assistant for multilingual next-utterance generation in language '{lang}'. "
-    "Generate only the next assistant utterance based on the dialogue context. "
-    "Keep the reply natural, short, and conversational. "
-    "Do not repeat the history. Do not add explanations or labels. "
-    "The output must be in '{lang}'."
+    "Generate only the next assistant utterance for this conversation. "
+    "Respond directly to the last user message. "
+    "Keep the reply natural, short, conversational, and contextually appropriate. "
+    "Match the tone of the dialogue. "
+    "Do not repeat the history. "
+    "Do not explain, summarize, translate, label, or add extra text. "
+    "Output only the reply in '{lang}'."
 )
 
-SHORT_REPLY_HINT = "Prefer a single short conversational sentence when it fits the context."
+SHORT_REPLY_HINT = (
+    "Prefer a brief human-like reply. "
+    "Use one short sentence when it fits the context."
+)
 
 
 def _text_or_empty(value: Any) -> str:
