@@ -64,6 +64,11 @@ def _to_jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _save_metadata(path: Path, meta: dict) -> None:
+    """Persist metadata in a stable, human-readable JSON format."""
+    path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -171,10 +176,13 @@ def main():
             device_name,
             torch_dtype_used,
         )
+        logger.info("  train_path=%s eval_path=%s", train_path, eval_path)
         logger.info(
-            "  train_samples=%s eval_samples=%s effective_batch_size=%s max_seq_length=%s",
+            "  train_samples=%s eval_samples=%s train_bs=%s grad_accum=%s effective_batch_size=%s max_seq_length=%s",
             len(ds_train),
             len(ds_eval) if ds_eval else 0,
+            per_device_bs,
+            grad_accum,
             effective_batch_size,
             max_length,
         )
@@ -202,10 +210,10 @@ def main():
             total_params,
             trainable_pct,
         )
-        if max_steps > 0 and max_steps < 20:
-            logger.warning("Very small max_steps=%s may be insufficient for meaningful learning.", max_steps)
-        if len(ds_train) < 50:
-            logger.warning("Very small dataset (%s rows): treat this run as a smoke test.", len(ds_train))
+        if max_steps > 0 and max_steps <= 50:
+            logger.warning("max_steps=%s suggests a demo/smoke-test run; results may be limited.", max_steps)
+        if len(ds_train) < 100:
+            logger.warning("train_sample_count=%s is small and likely for demo/smoke-test validation.", len(ds_train))
         args_tr = SFTConfig(
             output_dir=str(output_dir),
             per_device_train_batch_size=per_device_bs,
@@ -234,16 +242,11 @@ def main():
             eval_dataset=ds_eval,
             args=args_tr,
         )
-        with timer(logger, "train"):
-            trainer.train()
-        out_dir = output_dir / "lora_adapter"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        trainer.model.save_pretrained(str(out_dir))
-        tok.save_pretrained(str(out_dir))
-        logger.info("adapter_saved_to=%s tokenizer_saved_to=%s", out_dir, out_dir)
+        meta_path = output_dir / "train_run_metadata.json"
         run_meta = {
             "project_task": "multilingual next-utterance generation",
             "script": "06_train_sft.py",
+            "config_path": str(Path(args.config).resolve()),
             "timestamp": timestamp,
             "base_model_name": base,
             "output_dir": str(output_dir),
@@ -265,6 +268,9 @@ def main():
             "eval_steps": eval_steps,
             "save_strategy": _to_jsonable(args_tr.save_strategy),
             "eval_strategy": _to_jsonable(args_tr.eval_strategy),
+            "bf16": bool(bf16),
+            "fp16": bool(fp16),
+            "lora_enabled": bool(cfg["lora"]["enabled"]),
             "lora_r": int(cfg["lora"]["r"]) if cfg["lora"]["enabled"] else None,
             "lora_alpha": int(cfg["lora"]["alpha"]) if cfg["lora"]["enabled"] else None,
             "lora_dropout": float(cfg["lora"]["dropout"]) if cfg["lora"]["enabled"] else None,
@@ -274,12 +280,24 @@ def main():
             "total_parameters": total_params,
             "trainable_parameters": trainable_params,
             "trainable_percentage": round(trainable_pct, 6),
-            "final_adapter_path": str(out_dir),
-            "tokenizer_saved_path": str(out_dir),
+            "final_adapter_path": None,
+            "tokenizer_saved_path": None,
+            "training_completed": False,
         }
-        meta_path = output_dir / "train_run_metadata.json"
-        meta_path.write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
-        logger.info("train_metadata_path=%s", meta_path)
+        _save_metadata(meta_path, run_meta)
+        logger.info("train_metadata_path(initial)=%s", meta_path)
+        with timer(logger, "train"):
+            trainer.train()
+        out_dir = output_dir / "lora_adapter"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        trainer.model.save_pretrained(str(out_dir))
+        tok.save_pretrained(str(out_dir))
+        logger.info("adapter_saved_to=%s tokenizer_saved_to=%s", out_dir, out_dir)
+        run_meta["final_adapter_path"] = str(out_dir)
+        run_meta["tokenizer_saved_path"] = str(out_dir)
+        run_meta["training_completed"] = True
+        _save_metadata(meta_path, run_meta)
+        logger.info("train_metadata_path(final)=%s", meta_path)
         banner(logger, "Step 06: Done", char="-")
     except Exception:
         logger.exception("Step 06 failed")
