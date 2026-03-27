@@ -4,6 +4,7 @@ import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Optional
 
 import torch
 from datasets import load_dataset
@@ -22,6 +23,7 @@ def load_cfg(path: str) -> dict:
 
 
 def _count_trainable_params(model) -> tuple[int, int]:
+    """Return (trainable_params, total_params) for the current model."""
     total = 0
     trainable = 0
     for p in model.parameters():
@@ -33,11 +35,33 @@ def _count_trainable_params(model) -> tuple[int, int]:
 
 
 def _pick_device():
+    """Choose a single device for stable local fine-tuning."""
     if torch.cuda.is_available():
         return torch.device("cuda"), "cuda"
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
         return torch.device("mps"), "mps"
     return torch.device("cpu"), "cpu"
+
+
+def _validate_paths(train_path: Path, eval_path: Optional[Path]) -> None:
+    """Fail fast if required training/eval files are missing."""
+    if not train_path.exists():
+        raise FileNotFoundError(f"Training dataset not found: {train_path}")
+    if train_path.is_dir():
+        raise ValueError(f"Training dataset path must be a file, got directory: {train_path}")
+    if eval_path is not None:
+        if not eval_path.exists():
+            raise FileNotFoundError(f"Evaluation dataset path not found: {eval_path}")
+        if eval_path.is_dir():
+            raise ValueError(f"Evaluation dataset path must be a file, got directory: {eval_path}")
+
+
+def _to_jsonable(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool, list, dict)):
+        return value
+    return str(value)
 
 
 def main():
@@ -61,13 +85,20 @@ def main():
             raise ValueError("Missing required config field: data.train_path")
         train_path = resolve_path(data_cfg["train_path"], dirs["data"])
         eval_path = resolve_path(data_cfg.get("eval_path", ""), dirs["data"]) if data_cfg.get("eval_path") else None
+        _validate_paths(train_path, eval_path)
         logger.info("train_path=%s eval_path=%s model=%s", train_path, eval_path, base)
 
         with timer(logger, "load_dataset"):
-            ds_train = load_dataset("json", data_files=str(train_path), split="train")
+            try:
+                ds_train = load_dataset("json", data_files=str(train_path), split="train")
+            except Exception as e:
+                raise ValueError(f"Failed to load training dataset from {train_path}: {e}") from e
             ds_eval = None
-            if eval_path and Path(eval_path).exists():
-                ds_eval = load_dataset("json", data_files=str(eval_path), split="train")
+            if eval_path:
+                try:
+                    ds_eval = load_dataset("json", data_files=str(eval_path), split="train")
+                except Exception as e:
+                    raise ValueError(f"Failed to load eval dataset from {eval_path}: {e}") from e
         logger.info("train_samples=%s eval_samples=%s", len(ds_train), len(ds_eval) if ds_eval else 0)
 
         with timer(logger, "load_model_and_tokenizer"):
@@ -84,16 +115,25 @@ def main():
             logger.info("model_device=%s", device)
 
         if cfg["lora"]["enabled"]:
+            target_modules = cfg["lora"].get("target_modules")
             lora = LoraConfig(
                 r=int(cfg["lora"]["r"]),
                 lora_alpha=int(cfg["lora"]["alpha"]),
                 lora_dropout=float(cfg["lora"]["dropout"]),
                 bias="none",
                 task_type="CAUSAL_LM",
+                target_modules=target_modules,
             )
             model = get_peft_model(model, lora)
-            logger.info("LoRA enabled r=%s alpha=%s", cfg["lora"]["r"], cfg["lora"]["alpha"])
+            logger.info(
+                "LoRA enabled r=%s alpha=%s dropout=%s target_modules=%s",
+                cfg["lora"]["r"],
+                cfg["lora"]["alpha"],
+                cfg["lora"]["dropout"],
+                target_modules,
+            )
         else:
+            target_modules = None
             logger.info("LoRA disabled; full model fine-tuning mode.")
 
         trainable_params, total_params = _count_trainable_params(model)
@@ -109,12 +149,49 @@ def main():
         max_steps = int(tr_cfg["max_steps"]) if tr_cfg.get("max_steps") else -1
         num_epochs = float(tr_cfg.get("num_train_epochs", 1))
         per_device_bs = int(tr_cfg["per_device_train_batch_size"])
+        per_device_eval_bs = int(tr_cfg.get("per_device_eval_batch_size", per_device_bs))
         grad_accum = int(tr_cfg.get("gradient_accumulation_steps", 1))
         effective_batch_size = per_device_bs * grad_accum
         max_length = int(cfg["training"].get("max_seq_len", cfg["training"].get("max_seq_length", 2048)))
         logging_steps = int(tr_cfg.get("logging_steps", 10))
         save_steps = int(tr_cfg.get("save_steps", max(50, logging_steps)))
         seed = int(tr_cfg.get("seed", 42))
+        eval_strategy = "steps" if ds_eval else "no"
+        eval_steps = save_steps if ds_eval else None
+        save_strategy = str(tr_cfg.get("save_strategy", "steps"))
+        learning_rate = float(tr_cfg["learning_rate"])
+        torch_dtype_used = str(next(model.parameters()).dtype) if total_params > 0 else "unknown"
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        logger.info("Run summary:")
+        logger.info(
+            "  model=%s output_dir=%s device=%s dtype=%s",
+            base,
+            output_dir,
+            device_name,
+            torch_dtype_used,
+        )
+        logger.info(
+            "  train_samples=%s eval_samples=%s effective_batch_size=%s max_seq_length=%s",
+            len(ds_train),
+            len(ds_eval) if ds_eval else 0,
+            effective_batch_size,
+            max_length,
+        )
+        logger.info(
+            "  num_train_epochs=%s max_steps=%s learning_rate=%s",
+            num_epochs,
+            max_steps,
+            learning_rate,
+        )
+        logger.info(
+            "  lora_enabled=%s r=%s alpha=%s dropout=%s target_modules=%s",
+            cfg["lora"]["enabled"],
+            cfg["lora"].get("r"),
+            cfg["lora"].get("alpha"),
+            cfg["lora"].get("dropout"),
+            target_modules,
+        )
         logger.info(
             "output_dir=%s max_steps=%s num_train_epochs=%s effective_batch_size=%s trainable_params=%s/%s (%.2f%%)",
             output_dir,
@@ -132,15 +209,17 @@ def main():
         args_tr = SFTConfig(
             output_dir=str(output_dir),
             per_device_train_batch_size=per_device_bs,
+            per_device_eval_batch_size=per_device_eval_bs,
             gradient_accumulation_steps=grad_accum,
             num_train_epochs=num_epochs,
             max_steps=max_steps,
-            learning_rate=float(tr_cfg["learning_rate"]),
+            learning_rate=learning_rate,
             warmup_ratio=float(tr_cfg.get("warmup_ratio", 0.03)),
             logging_steps=logging_steps,
             save_steps=save_steps,
-            eval_strategy="steps" if ds_eval else "no",
-            eval_steps=save_steps if ds_eval else None,
+            save_strategy=save_strategy,
+            eval_strategy=eval_strategy,
+            eval_steps=eval_steps,
             report_to=[],
             bf16=bf16,
             fp16=fp16,
@@ -161,30 +240,42 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
         trainer.model.save_pretrained(str(out_dir))
         tok.save_pretrained(str(out_dir))
-        logger.info("adapter_saved_to=%s", out_dir)
+        logger.info("adapter_saved_to=%s tokenizer_saved_to=%s", out_dir, out_dir)
         run_meta = {
+            "project_task": "multilingual next-utterance generation",
             "script": "06_train_sft.py",
-            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-            "model_name": base,
-            "device": device_name,
-            "train_path": str(train_path),
-            "eval_path": str(eval_path) if eval_path else None,
-            "train_samples": len(ds_train),
-            "eval_samples": len(ds_eval) if ds_eval else 0,
+            "timestamp": timestamp,
+            "base_model_name": base,
             "output_dir": str(output_dir),
-            "adapter_dir": str(out_dir),
-            "max_seq_length": max_length,
-            "max_steps": max_steps,
+            "train_dataset_path": str(train_path),
+            "eval_dataset_path": str(eval_path) if eval_path else None,
+            "train_sample_count": len(ds_train),
+            "eval_sample_count": len(ds_eval) if ds_eval else 0,
+            "seed": seed,
+            "learning_rate": learning_rate,
             "num_train_epochs": num_epochs,
+            "max_steps": max_steps,
+            "per_device_train_batch_size": per_device_bs,
+            "per_device_eval_batch_size": per_device_eval_bs,
+            "gradient_accumulation_steps": grad_accum,
+            "effective_train_batch_size": effective_batch_size,
+            "max_seq_length": max_length,
             "logging_steps": logging_steps,
             "save_steps": save_steps,
-            "per_device_train_batch_size": per_device_bs,
-            "gradient_accumulation_steps": grad_accum,
-            "effective_batch_size": effective_batch_size,
-            "seed": seed,
-            "trainable_params": trainable_params,
-            "total_params": total_params,
-            "trainable_percent": round(trainable_pct, 4),
+            "eval_steps": eval_steps,
+            "save_strategy": _to_jsonable(args_tr.save_strategy),
+            "eval_strategy": _to_jsonable(args_tr.eval_strategy),
+            "lora_r": int(cfg["lora"]["r"]) if cfg["lora"]["enabled"] else None,
+            "lora_alpha": int(cfg["lora"]["alpha"]) if cfg["lora"]["enabled"] else None,
+            "lora_dropout": float(cfg["lora"]["dropout"]) if cfg["lora"]["enabled"] else None,
+            "target_modules": target_modules,
+            "device_used": device_name,
+            "torch_dtype_used": torch_dtype_used,
+            "total_parameters": total_params,
+            "trainable_parameters": trainable_params,
+            "trainable_percentage": round(trainable_pct, 6),
+            "final_adapter_path": str(out_dir),
+            "tokenizer_saved_path": str(out_dir),
         }
         meta_path = output_dir / "train_run_metadata.json"
         meta_path.write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
