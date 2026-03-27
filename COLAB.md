@@ -67,6 +67,38 @@ This is usually the fastest to *run* (Colab local disk), but you’ll re-clone e
 !pip install -q sentencepiece protobuf
 ```
 
+### 3.1 Sanity-check GPU + CUDA (do this once)
+
+Run this in a **Python** cell (no `!python` heredocs needed):
+
+```python
+import torch
+
+print("torch:", torch.__version__)
+print("cuda available:", torch.cuda.is_available())
+print("device count:", torch.cuda.device_count())
+if torch.cuda.is_available():
+  print("device:", torch.cuda.get_device_name(0))
+```
+
+If you see `torch: ...+cpu` or `cuda available: False`:
+
+- First confirm **Runtime → Change runtime type → Hardware accelerator: GPU**.
+- Then do **Runtime → Factory reset runtime** (recommended). Re-run sections 2–3.
+
+If you *must* repair without a factory reset (slower, but works), uninstall CPU torch and reinstall a CUDA wheel:
+
+```bash
+!pip uninstall -y torch torchvision torchaudio
+!pip install -q --index-url https://download.pytorch.org/whl/cu124 torch torchvision torchaudio
+```
+
+Then **restart the runtime/kernel** so Python loads the new torch build:
+
+- Colab menu: **Runtime → Restart runtime** (recommended)
+
+Note: your `nvidia-smi` may show a newer “CUDA Version” (driver capability). Installing `cu124` wheels is still fine on Colab as long as a GPU is attached.
+
 ### Option B (persistent): keep the git clone on Drive and `git pull`
 
 This avoids re-cloning when you come back later. It can be slightly slower at runtime because Drive I/O is slower than `/content`, but for this repo it’s usually fine.
@@ -88,6 +120,38 @@ else:
 !pip install -q -r /tmp/requirements_no_torch.txt
 !pip install -q sentencepiece protobuf
 ```
+
+### 3.1 Sanity-check GPU + CUDA (do this once)
+
+Run this in a **Python** cell (no `!python` heredocs needed):
+
+```python
+import torch
+
+print("torch:", torch.__version__)
+print("cuda available:", torch.cuda.is_available())
+print("device count:", torch.cuda.device_count())
+if torch.cuda.is_available():
+  print("device:", torch.cuda.get_device_name(0))
+```
+
+If you see `torch: ...+cpu` or `cuda available: False`:
+
+- First confirm **Runtime → Change runtime type → Hardware accelerator: GPU**.
+- Then do **Runtime → Factory reset runtime** (recommended). Re-run sections 2–3.
+
+If you *must* repair without a factory reset (slower, but works), uninstall CPU torch and reinstall a CUDA wheel:
+
+```bash
+!pip uninstall -y torch torchvision torchaudio
+!pip install -q --index-url https://download.pytorch.org/whl/cu124 torch torchvision torchaudio
+```
+
+Then **restart the runtime/kernel** so Python loads the new torch build:
+
+- Colab menu: **Runtime → Restart runtime** (recommended)
+
+Note: your `nvidia-smi` may show a newer “CUDA Version” (driver capability). Installing `cu124` wheels is still fine on Colab as long as a GPU is attached.
 
 ---
 
@@ -188,11 +252,12 @@ import os
 
 OUT_DIR = os.path.join(os.environ["DATA_DIR"], "sft", "teacher_dialogue_1000_bn")
 os.makedirs(OUT_DIR, exist_ok=True)
+os.environ["OUT_DIR"] = OUT_DIR
 
-!python3 scripts/generate_teacher_sft.py --input "$DATA_DIR/sft/dialogue_1000_bn/train.jsonl" --output "{OUT_DIR}/train.jsonl" --model Qwen/Qwen2.5-7B-Instruct --max-new-tokens 96 --temperature 0.0
-!python3 scripts/generate_teacher_sft.py --input "$DATA_DIR/sft/dialogue_1000_bn/test.jsonl" --output "{OUT_DIR}/test.jsonl" --model Qwen/Qwen2.5-7B-Instruct --max-new-tokens 96 --temperature 0.0
+!python3 scripts/generate_teacher_sft.py --input "$DATA_DIR/sft/dialogue_1000_bn/train.jsonl" --output "$OUT_DIR/train.jsonl" --model Qwen/Qwen2.5-7B-Instruct --max-new-tokens 96 --temperature 0.0
+!python3 scripts/generate_teacher_sft.py --input "$DATA_DIR/sft/dialogue_1000_bn/test.jsonl" --output "$OUT_DIR/test.jsonl" --model Qwen/Qwen2.5-7B-Instruct --max-new-tokens 96 --temperature 0.0
 
-!wc -l "{OUT_DIR}/train.jsonl" "{OUT_DIR}/test.jsonl"
+!wc -l "$OUT_DIR/train.jsonl" "$OUT_DIR/test.jsonl"
 ```
 
 ### 5.5 Fine-tune Qwen 0.5B on 800 teacher-labeled examples
