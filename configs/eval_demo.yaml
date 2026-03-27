@@ -1,14 +1,13 @@
-# Eval for model trained with training_1000.yaml
+# Evaluation config for demo training runs (training_demo.yaml).
 
 model:
   base_model: Qwen/Qwen2.5-0.5B-Instruct
-  lora_adapter_dir: model_1000/lora_adapter
+  lora_adapter_dir: model_demo/lora_adapter
 
 data:
   test_path: sft/multilingual_1000/test.jsonl
 
 evaluation:
-  # This samples N SFT examples (not dialogues). Increase if you want more coverage.
   num_samples_per_lang: 200
   langs: [bn]
   compute_bleu: true
@@ -17,9 +16,9 @@ evaluation:
   max_new_tokens: 96
 
 outputs:
-  report_path: eval_report_1000.md
-  metrics_path: eval_metrics_1000.json
-  predictions_path: generations_1000.jsonl
+  report_path: eval_report_demo.md
+  metrics_path: eval_metrics_demo.json
+  predictions_path: generations_demo.jsonl
   include_samples: true
   num_samples_per_lang: 5
   samples_format: blocks

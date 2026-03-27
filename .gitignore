@@ -14,24 +14,23 @@ __pycache__/
 *.egg
 dist/
 build/
+.ipynb_checkpoints/
 
 # Generated data and model outputs
-# By default ignore all generated artifacts, but allow committing a few
-# small, reproducible JSONL outputs that are needed for Colab runs.
-!data/
-data/*
-!data/translated_api_1000_bn/
-!data/translated_api_1000_bn/*.jsonl
-!data/sft/
-data/sft/*
-!data/sft/dialogue_1000_bn/
-!data/sft/dialogue_1000_bn/*.jsonl
-
-cache/
 outputs/
+outputs/temp/
+outputs/**/checkpoint-*/
+outputs/**/*.safetensors
+outputs/**/*.bin
+outputs/**/*.pt
 reports/
-*.log
 logs/
+cache/
+*.log
+
+# Data artifacts are generated; keep repository source-focused.
+data/*
+!data/.gitkeep
 
 # IDE / editor / OS
 .idea/

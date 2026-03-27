@@ -123,7 +123,7 @@ def _build_examples_for_dialogue(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="configs/translation.yaml", help="Translation config (for out_dir)")
+    ap.add_argument("--config", default="configs/translation_1000_api_bn.yaml", help="Translation config (for out_dir)")
     args = ap.parse_args()
     logger = setup_logger("05_build_sft")
     banner(logger, "Step 05: Build SFT")

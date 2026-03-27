@@ -59,13 +59,13 @@ with colC:
     st.caption("**SFT dir**")
     st.text(str(sft_dir) if sft_dir else "Not found")
 
-# LoRA adapter path (used by Try it tab and eval); resolved under OUTPUTS_DIR
-_lora_adapter_rel = "model/lora_adapter"
-_lora_adapter_path = paths.outputs_dir / _lora_adapter_rel
+# LoRA adapter path (prefer final, then demo); resolved under OUTPUTS_DIR
+_candidate_adapters = [paths.outputs_dir / "model_final/lora_adapter", paths.outputs_dir / "model_demo/lora_adapter"]
+_lora_adapter_path = next((p for p in _candidate_adapters if p.exists()), _candidate_adapters[0])
 st.caption("**LoRA adapter** (for Try it / evaluation)")
 st.text(str(_lora_adapter_path))
 if not _lora_adapter_path.exists():
-    st.caption("Not found — run `make quick` or `make full` to train and save the adapter.")
+    st.caption("Not found — run `make pipeline-demo` or `make pipeline-final` to train and save the adapter.")
 
 
 @st.cache_resource
@@ -90,7 +90,7 @@ with tab1:
     st.subheader("Dataset Viewer (Aligned Turns + Emotion + Dialog Acts)")
 
     if not translated_dir:
-        st.warning("No translated dataset found. Run: make quick (or make full) first.")
+        st.warning("No translated dataset found. Run: make translate first.")
     else:
         split = st.selectbox("Split", ["test", "validation", "train"], index=0)
         split_path = translated_dir / f"{split}.jsonl"
@@ -158,12 +158,12 @@ with tab2:
 with tab3:
     st.subheader("Evaluation Viewer")
 
-    report_full = paths.reports_dir / "eval_report_full.md"
-    report_quick = paths.reports_dir / "eval_report.md"
-    report_path = report_full if report_full.exists() else report_quick
+    report_final = paths.reports_dir / "eval_report_final.md"
+    report_demo = paths.reports_dir / "eval_report_demo.md"
+    report_path = report_final if report_final.exists() else report_demo
 
     if not report_path.exists():
-        st.warning("No eval report found yet. Run: make quick or make full to generate reports.")
+        st.warning("No eval report found yet. Run `make eval-demo` or `make eval-final`.")
     else:
         st.markdown(f"Using report: `{report_path.name}`")
         st.markdown(read_text(report_path))

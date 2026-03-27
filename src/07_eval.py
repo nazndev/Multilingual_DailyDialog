@@ -351,10 +351,6 @@ def main():
             lines.append("*Adapter not found; run step 6 first.*\n\n")
             lora_results = {l: {"refs": [], "hyps": [], "prompts": [], "meta": [], "langid_ok": 0} for l in langs}
 
-        for l in langs:
-            count = len(buckets[l])
-            pass
-
         # Summary comparison table
         lines.append("## Summary (Zero-shot vs Fine-tuned)\n\n")
         if compute_bleu_flag or compute_chrf_flag:
