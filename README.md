@@ -2,6 +2,8 @@
 
 Academic submission version of a minimal, reproducible pipeline for multilingual next-utterance generation.
 
+**Repository:** [github.com/nazndev/Multilingual_DailyDialog](https://github.com/nazndev/Multilingual_DailyDialog)
+
 ## Final pipeline (four stages)
 
 The supported workflow is:
@@ -12,8 +14,6 @@ The supported workflow is:
 4. `src/07_eval.py` — evaluate
 
 ### Bengali-only path (canonical)
-
-Use the API translation config and the same SFT output directory end-to-end:
 
 ```text
 translate  →  build_sft  →  train (demo or final)  →  eval (demo or final)
@@ -49,20 +49,42 @@ Step 1 (translation) expects preprocessed English DailyDialog JSONL files under:
 
 If these files are missing, prepare them before running the pipeline.
 
-## Current validated setup
+## Current validated baseline (0.5B Bengali)
 
-- **Base model (baseline):** `Qwen/Qwen2.5-0.5B-Instruct` as set in `configs/training_demo.yaml` and `configs/training_final.yaml`.
-- **SFT data:** `data/sft/multilingual_1000/{train,validation,test}.jsonl` produced by `src/05_build_sft.py` with `configs/translation_1000_api_bn.yaml` (`sft_dir: sft/multilingual_1000`).
+This is the **lightweight, reproducible baseline** you should report when you need a small, fast, cheap run.
+
+- **Model:** `Qwen/Qwen2.5-0.5B-Instruct` (`configs/training_demo.yaml`, `configs/training_final.yaml`).
+- **SFT data:** `data/sft/multilingual_1000/{train,validation,test}.jsonl` from `src/05_build_sft.py` with `configs/translation_1000_api_bn.yaml` (`sft_dir: sft/multilingual_1000`). With `sft.prompt.short_reply_hint: true`, the builder and eval share the same short-reply hint as in `src/utils/prompting.py`.
 - **Training:** standard LoRA on full-precision (or bf16) weights; `model.load_in_4bit` and `model.load_in_8bit` are `false` in the 0.5B configs.
-- **Evaluation:** decoding defaults are deterministic (`do_sample: false`, `temperature` / `top_p` at 1.0, `num_beams: 1`); see `evaluation.generation` in the eval YAML files.
+- **Evaluation:** decoding is deterministic (`evaluation.generation`: `do_sample: false`, `temperature` / `top_p` at 1.0, `num_beams: 1`, `max_new_tokens: 96`); see `configs/eval_final.yaml` and `configs/eval_demo.yaml`.
 
-## Optional larger-model setup (7B QLoRA)
+The **final** 0.5B training config (`configs/training_final.yaml`) uses a longer training budget than the demo config for a fairer baseline; it does **not** switch to 7B.
 
-- **Config:** `configs/training_7b_qlora_bn.yaml` uses `Qwen/Qwen2.5-7B-Instruct` with **4-bit loading** (`model.load_in_4bit: true`), **gradient checkpointing**, and a conservative batch size for T4-class GPUs.
-- **Eval:** `configs/eval_7b_qlora_bn.yaml` loads the same base model in 4-bit and applies the adapter under `outputs/model_7b_qlora_bn/lora_adapter/`.
+## Optional larger-model experiment (7B QLoRA Bengali)
+
+This path is **optional** and **stronger but heavier** than the 0.5B baseline. It is **not** required for a valid submission.
+
+- **Config:** `configs/training_7b_qlora_bn.yaml` — `Qwen/Qwen2.5-7B-Instruct` with **4-bit loading** (`model.load_in_4bit: true`), **gradient checkpointing**, and T4-friendly batch settings.
+- **Eval:** `configs/eval_7b_qlora_bn.yaml` — same Bengali test path and the same deterministic decoding block as `eval_final.yaml` for direct comparison.
 - **7B on Colab T4:** quantized training is **expected** for this path; the 0.5B baseline does not require it.
 
 This repository does **not** claim numerical results for 7B until you run those configs locally.
+
+## Checkpoint selection
+
+Training saves periodic checkpoints under the run output directory (e.g. `outputs/model_final/checkpoint-50`, `checkpoint-100`, …), with `save_steps` controlling spacing. The script also writes a final adapter to `outputs/<run>/lora_adapter/` after training completes.
+
+**Do not assume the last checkpoint or the final `lora_adapter` folder is best on validation or test.** Early stopping can overfit; later checkpoints may underperform. For a paper or report, compare **several** checkpoints on the same evaluation setup—e.g. `checkpoint-50`, `checkpoint-100`, `checkpoint-150`, `checkpoint-200`, or whatever exists nearest to those steps given your `save_steps` and `max_steps`.
+
+**Fair comparison:** use the **same** eval YAML (`evaluation`, `outputs`, `generation`, `num_samples_per_lang`) and only change which adapter you load.
+
+**How to evaluate a specific checkpoint in this repo:** `src/07_eval.py` only accepts `--config` (there is no CLI flag to override the adapter path). The supported approach is:
+
+1. Copy `configs/eval_final.yaml` (or `eval_7b_qlora_bn.yaml`) to a new file, e.g. `configs/eval_final_ckpt100.yaml`.
+2. Set `model.lora_adapter_dir` to the checkpoint subdirectory **relative to `OUTPUTS_DIR`** (default `./outputs`), e.g. `model_final/checkpoint-100` if the checkpoint lives at `outputs/model_final/checkpoint-100/`.
+3. Run: `python src/07_eval.py --config configs/eval_final_ckpt100.yaml`
+
+Repeat for other checkpoints and compare metrics under `reports/` using the same sample cap.
 
 ## Configs
 
@@ -132,6 +154,7 @@ Typical artifacts:
 - SFT data: `data/sft/multilingual_1000/*.jsonl`
 - SFT build summary: `data/sft/multilingual_1000/build_sft_summary.json`
 - LoRA adapter: `outputs/model_demo/lora_adapter/`, `outputs/model_final/lora_adapter/`, or `outputs/model_7b_qlora_bn/lora_adapter/`
+- Training checkpoints: `outputs/<run>/checkpoint-*`
 - Training metadata: `outputs/<run>/train_run_metadata.json`
 - Eval report, metrics, and JSONL generations: `reports/`
 

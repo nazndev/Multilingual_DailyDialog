@@ -12,12 +12,12 @@ data:
   test_path: sft/multilingual_1000/test.jsonl
 
 evaluation:
-  num_samples_per_lang: 200
-  langs: [bn]
+  run_baseline: true
   compute_bleu: true
   compute_chrf: true
   compute_bertscore: false
-  run_baseline: true
+  num_samples_per_lang: 200
+  langs: [bn]
   max_new_tokens: 96
   generation:
     max_new_tokens: 96
@@ -29,7 +29,7 @@ evaluation:
     eos_token_id_mode: auto
   prompt:
     style: default
-    short_reply_hint: false
+    short_reply_hint: true
     use_emotion_tag: false
     use_dialog_act_tag: false
     system_template: null

@@ -20,7 +20,7 @@ sft:
   max_history_chars: 0
   prompt:
     style: default
-    short_reply_hint: false
+    short_reply_hint: true
     # Optional override; must include {lang} or use placeholders emotion/dialog_act when tags are on.
     system_template: null
 
