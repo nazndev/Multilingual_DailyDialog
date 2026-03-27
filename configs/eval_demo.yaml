@@ -2,6 +2,10 @@
 
 model:
   base_model: Qwen/Qwen2.5-0.5B-Instruct
+  load_in_4bit: false
+  load_in_8bit: false
+  torch_dtype: null
+  device_map: null
   lora_adapter_dir: model_demo/lora_adapter
 
 data:
@@ -12,8 +16,23 @@ evaluation:
   langs: [bn]
   compute_bleu: true
   compute_chrf: true
+  compute_bertscore: false
   run_baseline: true
   max_new_tokens: 96
+  generation:
+    max_new_tokens: 96
+    do_sample: false
+    temperature: 1.0
+    top_p: 1.0
+    num_beams: 1
+    repetition_penalty: 1.0
+    eos_token_id_mode: auto
+  prompt:
+    style: default
+    short_reply_hint: false
+    use_emotion_tag: false
+    use_dialog_act_tag: false
+    system_template: null
 
 outputs:
   report_path: eval_report_demo.md

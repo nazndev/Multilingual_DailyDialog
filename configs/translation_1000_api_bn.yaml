@@ -16,6 +16,13 @@ sft:
   min_turns: 2
   max_samples: 0
   output_format: jsonl
+  # Optional: trim serialized history size (0 = unlimited; uses recent turns via context_window first).
+  max_history_chars: 0
+  prompt:
+    style: default
+    short_reply_hint: false
+    # Optional override; must include {lang} or use placeholders emotion/dialog_act when tags are on.
+    system_template: null
 
 # Cache stores per-turn translations (even though we request per-dialogue batches)
 cache:

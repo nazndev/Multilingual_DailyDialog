@@ -1,4 +1,4 @@
-.PHONY: venv install translate build-sft train-demo train-final eval-demo eval-final pipeline-demo pipeline-final
+.PHONY: venv install translate build-sft train-demo train-final train-7b eval-demo eval-final eval-7b pipeline-demo pipeline-final
 
 ifneq (,$(wildcard .env))
 include .env
@@ -31,6 +31,12 @@ eval-demo:
 
 eval-final:
 	BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct $(PYTHON) src/07_eval.py --config configs/eval_final.yaml
+
+train-7b:
+	$(PYTHON) src/06_train_sft.py --config configs/training_7b_qlora_bn.yaml
+
+eval-7b:
+	$(PYTHON) src/07_eval.py --config configs/eval_7b_qlora_bn.yaml
 
 pipeline-demo: translate build-sft train-demo eval-demo
 

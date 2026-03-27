@@ -8,8 +8,8 @@ from typing import Any, Optional
 
 import torch
 from datasets import load_dataset
-from peft import LoraConfig, get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTConfig, SFTTrainer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -36,12 +36,25 @@ def count_parameters(model) -> tuple[int, int, float]:
 
 
 def _pick_device():
-    """Choose a single device for stable local fine-tuning."""
+    """Choose a single device for stable local fine-tuning when not using device_map."""
     if torch.cuda.is_available():
         return torch.device("cuda"), "cuda"
     if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
         return torch.device("mps"), "mps"
     return torch.device("cpu"), "cpu"
+
+
+def _parse_torch_dtype(name: Optional[str]):
+    if not name or str(name).lower() in ("auto", "none", "null"):
+        return None
+    n = str(name).lower()
+    if n in ("bfloat16", "bf16"):
+        return torch.bfloat16
+    if n in ("float16", "fp16"):
+        return torch.float16
+    if n in ("float32", "fp32"):
+        return torch.float32
+    raise ValueError(f"Unsupported model.torch_dtype={name!r}")
 
 
 def _validate_paths(train_path: Path, eval_path: Optional[Path]) -> None:
@@ -75,17 +88,24 @@ def main():
     ap.add_argument("--config", required=True)
     args = ap.parse_args()
     logger = setup_logger("06_train_sft")
-    # This stage fine-tunes next-utterance generation behavior using chat-format SFT data.
     banner(logger, "Step 06: Train SFT (LoRA)")
     log_env_safely(logger, ["DATA_DIR", "OUTPUTS_DIR", "BASE_MODEL"])
     try:
         dirs = get_dirs()
         cfg = load_cfg(args.config)
         log_config_safely(logger, cfg, "config")
-        # Prefer the config's model for reproducibility; fall back to env only if config omits it.
         base = cfg.get("base_model") or get_env("BASE_MODEL")
         if not base:
             raise ValueError("Missing base model. Set `base_model` in config or BASE_MODEL env var.")
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        load_in_4bit = bool(model_cfg.get("load_in_4bit", False))
+        load_in_8bit = bool(model_cfg.get("load_in_8bit", False))
+        if load_in_4bit and load_in_8bit:
+            raise ValueError("model.load_in_4bit and model.load_in_8bit cannot both be true.")
+        device_map = model_cfg.get("device_map")
+        dtype_str = model_cfg.get("torch_dtype")
+        torch_dtype = _parse_torch_dtype(dtype_str)
+
         data_cfg = cfg["data"]
         if "train_path" not in data_cfg:
             raise ValueError("Missing required config field: data.train_path")
@@ -109,6 +129,12 @@ def main():
         eval_sample_count = len(ds_eval) if ds_eval else 0
         logger.info("train_samples=%s eval_samples=%s", train_sample_count, eval_sample_count)
 
+        tr_cfg = cfg["training"]
+        gradient_checkpointing = bool(tr_cfg.get("gradient_checkpointing", False))
+        resume_from_checkpoint = tr_cfg.get("resume_from_checkpoint")
+        if resume_from_checkpoint:
+            resume_from_checkpoint = str(resolve_path(resume_from_checkpoint, dirs["outputs"]))
+
         with timer(logger, "load_model_and_tokenizer"):
             tok = AutoTokenizer.from_pretrained(base, use_fast=True)
             if tok.pad_token is None:
@@ -118,9 +144,40 @@ def main():
             if device_name == "cpu":
                 logger.warning("Training on CPU can be very slow; use CUDA or MPS when available.")
 
-            model = AutoModelForCausalLM.from_pretrained(base)
-            model.to(device)
-            logger.info("model_device=%s", device)
+            quantization_mode = "none"
+            quantization_config = None
+            if load_in_4bit:
+                quantization_mode = "4bit"
+                compute_dtype = torch_dtype or torch.bfloat16
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=compute_dtype,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                )
+            elif load_in_8bit:
+                quantization_mode = "8bit"
+                quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+
+            use_quant = load_in_4bit or load_in_8bit
+            if use_quant and device_map is None:
+                device_map = "auto"
+
+            model_kwargs: dict[str, Any] = {}
+            if quantization_config is not None:
+                model_kwargs["quantization_config"] = quantization_config
+                model_kwargs["device_map"] = device_map or "auto"
+            else:
+                if torch_dtype is not None:
+                    model_kwargs["torch_dtype"] = torch_dtype
+                if device_map is not None:
+                    model_kwargs["device_map"] = device_map
+            model = AutoModelForCausalLM.from_pretrained(base, **model_kwargs)
+            if use_quant:
+                model = prepare_model_for_kbit_training(model)
+            elif device_map is None:
+                model.to(device)
+            logger.info("model_device_map=%s quantization=%s", device_map, quantization_mode)
 
         if cfg["lora"]["enabled"]:
             target_modules = cfg["lora"].get("target_modules")
@@ -144,13 +201,17 @@ def main():
             target_modules = None
             logger.info("LoRA disabled; full model fine-tuning mode.")
 
+        if gradient_checkpointing:
+            model.gradient_checkpointing_enable()
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
+
         total_params, trainable_params, trainable_pct = count_parameters(model)
 
         prec = cfg.get("precision", {})
         bf16 = (prec.get("bf16") is True) or (prec.get("bf16") == "auto" and torch.cuda.is_available())
         fp16 = not bf16 and ((prec.get("fp16") is True) or (prec.get("fp16") == "auto" and torch.cuda.is_available()))
 
-        tr_cfg = cfg["training"]
         output_dir = resolve_path(tr_cfg["output_dir"], dirs["outputs"])
         output_dir.mkdir(parents=True, exist_ok=True)
         max_steps = int(tr_cfg["max_steps"]) if tr_cfg.get("max_steps") else -1
@@ -215,7 +276,10 @@ def main():
         if max_steps != -1 and max_steps <= 50:
             logger.warning("max_steps=%s suggests a demo/smoke-test run; results may be limited.", max_steps)
         if train_sample_count < 100:
-            logger.warning("train_sample_count=%s is small and likely for demo/smoke-test validation.", train_sample_count)
+            logger.warning(
+                "train_sample_count=%s is small and likely for demo/smoke-test validation.",
+                train_sample_count,
+            )
         args_tr = SFTConfig(
             output_dir=str(output_dir),
             per_device_train_batch_size=per_device_bs,
@@ -236,6 +300,7 @@ def main():
             seed=seed,
             max_length=max_length,
             packing=False,
+            gradient_checkpointing=gradient_checkpointing,
         )
         trainer = SFTTrainer(
             model=model,
@@ -258,12 +323,14 @@ def main():
             "eval_sample_count": eval_sample_count,
             "seed": seed,
             "learning_rate": learning_rate,
+            "epochs": num_epochs,
             "num_train_epochs": num_epochs,
             "max_steps": max_steps,
             "per_device_train_batch_size": per_device_bs,
             "per_device_eval_batch_size": per_device_eval_bs,
             "gradient_accumulation_steps": grad_accum,
             "effective_train_batch_size": effective_train_batch_size,
+            "effective_batch_size": effective_train_batch_size,
             "max_seq_length": max_length,
             "logging_steps": logging_steps,
             "save_steps": save_steps,
@@ -272,24 +339,37 @@ def main():
             "eval_strategy": _to_jsonable(args_tr.eval_strategy),
             "bf16": bool(bf16),
             "fp16": bool(fp16),
+            "dtype": torch_dtype_used,
+            "torch_dtype_used": torch_dtype_used,
+            "torch_dtype_config": dtype_str,
+            "quantization_mode": quantization_mode,
+            "load_in_4bit": load_in_4bit,
+            "load_in_8bit": load_in_8bit,
+            "device_map": device_map,
+            "gradient_checkpointing": gradient_checkpointing,
             "lora_enabled": bool(cfg["lora"]["enabled"]),
             "lora_r": int(cfg["lora"]["r"]) if cfg["lora"]["enabled"] else None,
             "lora_alpha": int(cfg["lora"]["alpha"]) if cfg["lora"]["enabled"] else None,
             "lora_dropout": float(cfg["lora"]["dropout"]) if cfg["lora"]["enabled"] else None,
+            "lora_settings": {
+                "r": cfg["lora"].get("r"),
+                "alpha": cfg["lora"].get("alpha"),
+                "dropout": cfg["lora"].get("dropout"),
+            },
             "target_modules": target_modules,
             "device_used": device_name,
-            "torch_dtype_used": torch_dtype_used,
             "total_parameters": total_params,
             "trainable_parameters": trainable_params,
             "trainable_percentage": round(trainable_pct, 6),
             "final_adapter_path": None,
             "tokenizer_saved_path": None,
             "training_completed": False,
+            "resume_from_checkpoint": resume_from_checkpoint,
         }
         save_json(meta_path, run_meta)
         logger.info("train_metadata_path(initial)=%s", meta_path)
         with timer(logger, "train"):
-            trainer.train()
+            trainer.train(resume_from_checkpoint=resume_from_checkpoint if resume_from_checkpoint else None)
         out_dir = output_dir / "lora_adapter"
         out_dir.mkdir(parents=True, exist_ok=True)
         trainer.model.save_pretrained(str(out_dir))

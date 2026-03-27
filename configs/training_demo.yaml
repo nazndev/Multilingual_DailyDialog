@@ -1,6 +1,13 @@
 # Lightweight smoke-test training config.
 base_model: Qwen/Qwen2.5-0.5B-Instruct
 
+# Optional: omit or set load_in_4bit/load_in_8bit false for standard LoRA (default).
+model:
+  load_in_4bit: false
+  load_in_8bit: false
+  torch_dtype: null
+  device_map: null
+
 data:
   train_path: sft/multilingual_1000/train.jsonl
   eval_path: sft/multilingual_1000/validation.jsonl
@@ -18,12 +25,14 @@ training:
   logging_steps: 1
   save_steps: 10
   output_dir: model_demo
+  gradient_checkpointing: false
 
 lora:
   enabled: true
   r: 8
   alpha: 16
   dropout: 0.05
+  target_modules: null
 
 precision:
   bf16: auto
