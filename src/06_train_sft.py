@@ -22,8 +22,8 @@ def load_cfg(path: str) -> dict:
     return yaml.safe_load(open(path, "r", encoding="utf-8"))
 
 
-def _count_trainable_params(model) -> tuple[int, int]:
-    """Return (trainable_params, total_params) for the current model."""
+def count_parameters(model) -> tuple[int, int, float]:
+    """Return (total_parameters, trainable_parameters, trainable_percentage)."""
     total = 0
     trainable = 0
     for p in model.parameters():
@@ -31,7 +31,8 @@ def _count_trainable_params(model) -> tuple[int, int]:
         total += n
         if p.requires_grad:
             trainable += n
-    return trainable, total
+    trainable_percentage = (100.0 * trainable / total) if total else 0.0
+    return total, trainable, trainable_percentage
 
 
 def _pick_device():
@@ -64,9 +65,9 @@ def _to_jsonable(value: Any) -> Any:
     return str(value)
 
 
-def _save_metadata(path: Path, meta: dict) -> None:
-    """Persist metadata in a stable, human-readable JSON format."""
-    path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+def save_json(path: Path, data: dict) -> None:
+    """Persist JSON in a stable, human-readable format."""
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def main():
@@ -104,7 +105,9 @@ def main():
                     ds_eval = load_dataset("json", data_files=str(eval_path), split="train")
                 except Exception as e:
                     raise ValueError(f"Failed to load eval dataset from {eval_path}: {e}") from e
-        logger.info("train_samples=%s eval_samples=%s", len(ds_train), len(ds_eval) if ds_eval else 0)
+        train_sample_count = len(ds_train)
+        eval_sample_count = len(ds_eval) if ds_eval else 0
+        logger.info("train_samples=%s eval_samples=%s", train_sample_count, eval_sample_count)
 
         with timer(logger, "load_model_and_tokenizer"):
             tok = AutoTokenizer.from_pretrained(base, use_fast=True)
@@ -141,8 +144,7 @@ def main():
             target_modules = None
             logger.info("LoRA disabled; full model fine-tuning mode.")
 
-        trainable_params, total_params = _count_trainable_params(model)
-        trainable_pct = (100.0 * trainable_params / total_params) if total_params else 0.0
+        total_params, trainable_params, trainable_pct = count_parameters(model)
 
         prec = cfg.get("precision", {})
         bf16 = (prec.get("bf16") is True) or (prec.get("bf16") == "auto" and torch.cuda.is_available())
@@ -156,7 +158,7 @@ def main():
         per_device_bs = int(tr_cfg["per_device_train_batch_size"])
         per_device_eval_bs = int(tr_cfg.get("per_device_eval_batch_size", per_device_bs))
         grad_accum = int(tr_cfg.get("gradient_accumulation_steps", 1))
-        effective_batch_size = per_device_bs * grad_accum
+        effective_train_batch_size = per_device_bs * grad_accum
         max_length = int(cfg["training"].get("max_seq_len", cfg["training"].get("max_seq_length", 2048)))
         logging_steps = int(tr_cfg.get("logging_steps", 10))
         save_steps = int(tr_cfg.get("save_steps", max(50, logging_steps)))
@@ -179,11 +181,11 @@ def main():
         logger.info("  train_path=%s eval_path=%s", train_path, eval_path)
         logger.info(
             "  train_samples=%s eval_samples=%s train_bs=%s grad_accum=%s effective_batch_size=%s max_seq_length=%s",
-            len(ds_train),
-            len(ds_eval) if ds_eval else 0,
+            train_sample_count,
+            eval_sample_count,
             per_device_bs,
             grad_accum,
-            effective_batch_size,
+            effective_train_batch_size,
             max_length,
         )
         logger.info(
@@ -205,15 +207,15 @@ def main():
             output_dir,
             max_steps,
             num_epochs,
-            effective_batch_size,
+            effective_train_batch_size,
             trainable_params,
             total_params,
             trainable_pct,
         )
-        if max_steps > 0 and max_steps <= 50:
+        if max_steps != -1 and max_steps <= 50:
             logger.warning("max_steps=%s suggests a demo/smoke-test run; results may be limited.", max_steps)
-        if len(ds_train) < 100:
-            logger.warning("train_sample_count=%s is small and likely for demo/smoke-test validation.", len(ds_train))
+        if train_sample_count < 100:
+            logger.warning("train_sample_count=%s is small and likely for demo/smoke-test validation.", train_sample_count)
         args_tr = SFTConfig(
             output_dir=str(output_dir),
             per_device_train_batch_size=per_device_bs,
@@ -252,8 +254,8 @@ def main():
             "output_dir": str(output_dir),
             "train_dataset_path": str(train_path),
             "eval_dataset_path": str(eval_path) if eval_path else None,
-            "train_sample_count": len(ds_train),
-            "eval_sample_count": len(ds_eval) if ds_eval else 0,
+            "train_sample_count": train_sample_count,
+            "eval_sample_count": eval_sample_count,
             "seed": seed,
             "learning_rate": learning_rate,
             "num_train_epochs": num_epochs,
@@ -261,7 +263,7 @@ def main():
             "per_device_train_batch_size": per_device_bs,
             "per_device_eval_batch_size": per_device_eval_bs,
             "gradient_accumulation_steps": grad_accum,
-            "effective_train_batch_size": effective_batch_size,
+            "effective_train_batch_size": effective_train_batch_size,
             "max_seq_length": max_length,
             "logging_steps": logging_steps,
             "save_steps": save_steps,
@@ -284,7 +286,7 @@ def main():
             "tokenizer_saved_path": None,
             "training_completed": False,
         }
-        _save_metadata(meta_path, run_meta)
+        save_json(meta_path, run_meta)
         logger.info("train_metadata_path(initial)=%s", meta_path)
         with timer(logger, "train"):
             trainer.train()
@@ -296,7 +298,7 @@ def main():
         run_meta["final_adapter_path"] = str(out_dir)
         run_meta["tokenizer_saved_path"] = str(out_dir)
         run_meta["training_completed"] = True
-        _save_metadata(meta_path, run_meta)
+        save_json(meta_path, run_meta)
         logger.info("train_metadata_path(final)=%s", meta_path)
         banner(logger, "Step 06: Done", char="-")
     except Exception:

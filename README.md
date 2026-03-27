@@ -128,15 +128,15 @@ Use `configs/training_demo.yaml` for quick smoke tests and `configs/training_fin
 ---
 
 ## Training Configs
-- `configs/training_demo.yaml`: smoke test / quick local validation (small-step sanity run).
-- `configs/training_final.yaml`: stronger experiment configuration for submission-quality runs.
+- `configs/training_demo.yaml` (**quick/demo**): smoke test / fast local sanity run.
+- `configs/training_final.yaml` (**final**): longer, stronger experiment configuration for report/submission runs.
 
 Example commands:
 ```bash
 # Demo (quick local check)
 BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct python src/06_train_sft.py --config configs/training_demo.yaml
 
-# Final (actual experiment run)
+# Final (full experiment run)
 BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct python src/06_train_sft.py --config configs/training_final.yaml
 ```
 
