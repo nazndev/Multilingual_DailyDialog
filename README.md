@@ -1,12 +1,48 @@
-# Multilingual DailyDialog Translation + SFT
+# Multilingual DailyDialog: Next-Utterance Generation Pipeline
 
 Dataset: https://huggingface.co/datasets/roskoN/dailydialog
 
-Targets: Bangla (bn), Arabic (ar), Spanish (es). Pipeline preserves per-turn **dialog acts** and **emotion** labels; evaluation includes **BLEU** and optional **baseline** (base vs LoRA).
+Targets: Bangla (bn), Arabic (ar), Spanish (es). Pipeline preserves per-turn **dialog acts** and **emotion** labels; evaluation includes automatic generation metrics and **zero-shot vs fine-tuned** comparison (base vs LoRA).
 
-**Models:** Translation = NLLB (default) or **LLM API (e.g. GPT)** for higher accuracy; Chat = Qwen2.5-7B-Instruct + LoRA. Evaluation compares **Zero-shot** (base) vs **Fine-tuned** (LoRA).
+**Models:** Translation = NLLB (default) or **LLM API (e.g. GPT)** for higher accuracy; Chat = Qwen2.5 Instruct + LoRA. Evaluation compares **Zero-shot** (base model) vs **Fine-tuned** (base + LoRA).
 
 **Run on Google Colab (persistent):** [COLAB.md](COLAB.md).
+
+---
+
+## Task Definition
+This project studies **multilingual next-utterance generation** using translated DailyDialog conversations.
+
+- DailyDialog provides utterance text with turn-level **dialog act** and **emotion** annotations.
+- The current supervised training target is the **next assistant utterance** (sequence generation), not classification.
+- Dialog act and emotion labels are preserved in the processed data for analysis and optional prompt conditioning during SFT data construction.
+
+### What this project currently does
+- Builds translated multilingual dialogue data (`en -> bn/ar/es`).
+- Converts dialogues into chat-format SFT samples for next-utterance generation.
+- Fine-tunes a base chat model with LoRA.
+- Evaluates zero-shot vs fine-tuned outputs with automatic metrics and language-consistency checks.
+
+### What this project does not yet do
+- Full conversational intelligence beyond single-turn next-utterance generation.
+- Dialog act classification as a standalone prediction task.
+- Emotion classification as a standalone prediction task.
+- SOTA benchmarking claims beyond computed metrics in this repository.
+
+---
+
+## Pipeline Overview
+The runnable CLI pipeline is:
+
+1. Download raw DailyDialog
+2. Preprocess into normalized dialogue JSONL
+3. Translate target languages
+4. (Optional) translation quality checks
+5. Build SFT chat-format dataset (with optional metadata conditioning)
+6. Fine-tune LoRA adapter
+7. Evaluate zero-shot (base) vs fine-tuned (LoRA)
+
+Each stage writes inspectable artifacts under `data/`, `outputs/`, and `reports/`.
 
 ---
 
@@ -52,9 +88,42 @@ Then run steps 4–6 (Build SFT → Train → Eval) as usual. Translations are c
 ---
 
 ## Zero-shot vs Fine-tuned evaluation
-Step 6 (Eval) compares **Zero-shot** (base Qwen, no LoRA) and **Fine-tuned** (base + LoRA) on the test set. In `configs/eval.yaml`, `run_baseline: true` runs the base model first and labels the report as **Zero-shot (base model)** and **Fine-tuned (LoRA)**. The eval report is written to `REPORTS_DIR/eval_report.md`.
+Step 7 (Eval) compares **Zero-shot** (base Qwen, no LoRA) and **Fine-tuned** (base + LoRA) on the same evaluation set. In eval config, `run_baseline: true` runs the base model first and labels outputs as **Zero-shot (base model)** and **Fine-tuned (LoRA)**.
+
+Evaluation artifacts now include:
+- Markdown report (`report_path`)
+- Raw predictions (`predictions_path`, JSONL)
+- Machine-readable metrics (`metrics_path`, JSON)
 
 **Build SFT is required before both.** Train uses SFT train/validation data; Eval uses SFT test data (each example has `messages`: system + user/assistant utterances). Build SFT converts translated **utterances** (per-turn dialogue text in bn/ar/es) into that chat format, so the pipeline order is: **Translate → Build SFT → Train → Eval (zero-shot + fine-tuned)**.
+
+---
+
+## Run Commands (from scratch)
+```bash
+# 1) Download
+python src/01_download.py
+
+# 2) Preprocess
+python src/02_preprocess.py --config configs/preprocess_1000.yaml
+
+# 3) Translate (API example, bn)
+TARGET_LANGS=bn TRANSLATION_BACKEND=api python src/03_translate.py --config configs/translation_1000_api_bn.yaml
+
+# 4) Optional translation checks
+python src/04_quality_checks.py --config configs/translation_1000_api_bn.yaml
+
+# 5) Build SFT
+TARGET_LANGS=bn python src/05_build_sft.py --config configs/translation_1000_api_bn.yaml
+
+# 6) Train (demo)
+BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct python src/06_train_sft.py --config configs/training_demo.yaml
+
+# 7) Evaluate zero-shot vs fine-tuned
+BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct python src/07_eval.py --config configs/eval_1000.yaml
+```
+
+Use `configs/training_demo.yaml` for quick smoke tests and `configs/training_final.yaml` for stronger experiment runs.
 
 ---
 

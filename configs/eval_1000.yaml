@@ -12,11 +12,14 @@ evaluation:
   num_samples_per_lang: 200
   langs: [bn]
   compute_bleu: true
+  compute_chrf: true
   run_baseline: true
   max_new_tokens: 96
 
 outputs:
   report_path: eval_report_1000.md
+  metrics_path: eval_metrics_1000.json
+  predictions_path: generations_1000.jsonl
   include_samples: true
   num_samples_per_lang: 5
   samples_format: blocks

@@ -6,6 +6,17 @@ processed_dir: processed_1000
 out_dir: translated_api_1000_bn
 sft_dir: sft/multilingual_1000
 
+sft:
+  # Keep defaults close to old behavior while allowing richer prompt controls.
+  source_lang_field: turns_en
+  target_lang_field: turns_{lang}
+  context_window: -1
+  use_emotion_tag: false
+  use_dialog_act_tag: false
+  min_turns: 2
+  max_samples: 0
+  output_format: jsonl
+
 # Cache stores per-turn translations (even though we request per-dialogue batches)
 cache:
   dir: translation_api_1000_bn

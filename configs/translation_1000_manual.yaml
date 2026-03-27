@@ -11,3 +11,13 @@ out_dir: translated_manual_1000
 
 # Where Step 05 writes the SFT dataset used by training/eval
 sft_dir: sft/multilingual_1000
+
+sft:
+  source_lang_field: turns_en
+  target_lang_field: turns_{lang}
+  context_window: -1
+  use_emotion_tag: false
+  use_dialog_act_tag: false
+  min_turns: 2
+  max_samples: 0
+  output_format: jsonl

@@ -1,11 +1,15 @@
 """
-Evaluation: language-ID consistency, BLEU (optional), baseline comparison (optional).
-Report written to REPORTS_DIR (from env) or path in config.
+Evaluation for multilingual next-utterance generation:
+- language-ID consistency
+- zero-shot (base) vs fine-tuned (LoRA) comparison
+- BLEU / chrF automatic metrics
+Artifacts are written under REPORTS_DIR using config paths.
 """
 import argparse
 import json
 import sys
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 from datasets import load_dataset
@@ -63,6 +67,9 @@ def run_model_on_buckets(model, tok, buckets, langs, max_new_tokens=128):
             meta = {
                 "dialogue_id": rec.get("dialogue_id"),
                 "turn_index": rec.get("turn_index"),
+                "emotion_at_turn": rec.get("emotion_at_turn"),
+                "act_at_turn": rec.get("act_at_turn"),
+                "lang": l,
             }
             messages = rec["messages"][:-1] if rec.get("messages") else []
             enc = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
@@ -201,8 +208,43 @@ def compute_bleu(refs, hyps):
         return None
 
 
+def compute_chrf(refs, hyps):
+    try:
+        import sacrebleu
+        score = sacrebleu.corpus_chrf(hyps, [refs])
+        return round(score.score, 2)
+    except Exception:
+        return None
+
+
 def _fmt_bleu(x):
     return "-" if x is None else str(x)
+
+
+def _safe_ratio(num: int, den: int) -> float:
+    return round(float(num) / float(den), 4) if den else 0.0
+
+
+def _group_metric_by_label(result_pack: dict, label_key: str, compute_metric):
+    groups = {}
+    refs = result_pack.get("refs", [])
+    hyps = result_pack.get("hyps", [])
+    metas = result_pack.get("meta", [])
+    for idx in range(min(len(refs), len(hyps), len(metas))):
+        label = (metas[idx] or {}).get(label_key)
+        if label is None or label == "":
+            continue
+        if label not in groups:
+            groups[label] = {"refs": [], "hyps": []}
+        groups[label]["refs"].append(refs[idx])
+        groups[label]["hyps"].append(hyps[idx])
+    out = {}
+    for label, val in groups.items():
+        out[str(label)] = {
+            "count": len(val["refs"]),
+            "score": compute_metric(val["refs"], val["hyps"]) if val["refs"] else None,
+        }
+    return out
 
 
 def main():
@@ -229,6 +271,7 @@ def main():
 
         run_baseline = cfg.get("evaluation", {}).get("run_baseline", False)
         compute_bleu_flag = cfg.get("evaluation", {}).get("compute_bleu", True)
+        compute_chrf_flag = cfg.get("evaluation", {}).get("compute_chrf", True)
         max_new_tokens = int(cfg.get("evaluation", {}).get("max_new_tokens", 128))
         out_cfg = cfg.get("outputs", {}) or {}
         include_examples = bool(out_cfg.get("include_samples", out_cfg.get("include_examples", False)))
@@ -239,7 +282,14 @@ def main():
         # Prefer config so eval is deterministic even if TARGET_LANGS is set.
         langs = cfg_langs if cfg_langs else env_targets
         n = int(cfg["evaluation"]["num_samples_per_lang"])
-        logger.info("evaluation_langs=%s num_samples_per_lang=%s run_baseline=%s compute_bleu=%s", langs, n, run_baseline, compute_bleu_flag)
+        logger.info(
+            "evaluation_langs=%s num_samples_per_lang=%s run_baseline=%s compute_bleu=%s compute_chrf=%s",
+            langs,
+            n,
+            run_baseline,
+            compute_bleu_flag,
+            compute_chrf_flag,
+        )
 
         buckets = {l: [] for l in langs}
         for rec in ds:
@@ -307,48 +357,123 @@ def main():
 
         # Summary comparison table
         lines.append("## Summary (Zero-shot vs Fine-tuned)\n\n")
-        if compute_bleu_flag:
-            lines.append("| Lang | Samples | Zero-shot LangID | Zero-shot BLEU | Fine-tuned LangID | Fine-tuned BLEU |\n")
-            lines.append("|---|---:|---:|---:|---:|---:|\n")
+        if compute_bleu_flag or compute_chrf_flag:
+            extra_headers = ""
+            extra_separator = ""
+            if compute_bleu_flag:
+                extra_headers += " | Zero-shot BLEU | Fine-tuned BLEU"
+                extra_separator += "|---:|---:"
+            if compute_chrf_flag:
+                extra_headers += " | Zero-shot chrF | Fine-tuned chrF"
+                extra_separator += "|---:|---:"
+            lines.append(f"| Lang | Samples | Zero-shot LangID | Fine-tuned LangID{extra_headers} |\n")
+            lines.append(f"|---|---:|---:|---:{extra_separator}|\n")
         else:
             lines.append("| Lang | Samples | Zero-shot LangID | Fine-tuned LangID |\n")
             lines.append("|---|---:|---:|---:|\n")
 
         overall_base_refs, overall_base_hyps = [], []
         overall_lora_refs, overall_lora_hyps = [], []
+        per_lang_metrics = {}
 
         for l in langs:
             count = len(buckets[l])
             z_ok = base_results[l]["langid_ok"] if base_results and run_baseline else 0
             f_ok = lora_results[l]["langid_ok"] if lora_results else 0
+            z_bleu = None
+            f_bleu = None
+            z_chrf = None
+            f_chrf = None
 
-            if compute_bleu_flag:
-                z_bleu = None
-                f_bleu = None
-                if base_results and run_baseline and base_results[l].get("refs"):
+            if base_results and run_baseline and base_results[l].get("refs"):
+                if compute_bleu_flag:
                     z_bleu = compute_bleu(base_results[l]["refs"], base_results[l]["hyps"])
-                    overall_base_refs.extend(base_results[l]["refs"])
-                    overall_base_hyps.extend(base_results[l]["hyps"])
-                if lora_results and lora_results[l].get("refs"):
+                if compute_chrf_flag:
+                    z_chrf = compute_chrf(base_results[l]["refs"], base_results[l]["hyps"])
+                overall_base_refs.extend(base_results[l]["refs"])
+                overall_base_hyps.extend(base_results[l]["hyps"])
+            if lora_results and lora_results[l].get("refs"):
+                if compute_bleu_flag:
                     f_bleu = compute_bleu(lora_results[l]["refs"], lora_results[l]["hyps"])
-                    overall_lora_refs.extend(lora_results[l]["refs"])
-                    overall_lora_hyps.extend(lora_results[l]["hyps"])
+                if compute_chrf_flag:
+                    f_chrf = compute_chrf(lora_results[l]["refs"], lora_results[l]["hyps"])
+                overall_lora_refs.extend(lora_results[l]["refs"])
+                overall_lora_hyps.extend(lora_results[l]["hyps"])
 
-                lines.append(
-                    f"| {l} | {count} | {z_ok}/{count} | {_fmt_bleu(z_bleu)} | {f_ok}/{count} | {_fmt_bleu(f_bleu)} |\n"
-                )
+            if compute_bleu_flag or compute_chrf_flag:
+                suffix = ""
+                if compute_bleu_flag:
+                    suffix += f" | {_fmt_bleu(z_bleu)} | {_fmt_bleu(f_bleu)}"
+                if compute_chrf_flag:
+                    suffix += f" | {_fmt_bleu(z_chrf)} | {_fmt_bleu(f_chrf)}"
+                lines.append(f"| {l} | {count} | {z_ok}/{count} | {f_ok}/{count}{suffix} |\n")
             else:
                 lines.append(f"| {l} | {count} | {z_ok}/{count} | {f_ok}/{count} |\n")
+            per_lang_metrics[l] = {
+                "samples": count,
+                "zero_shot": {
+                    "langid_ok": z_ok,
+                    "langid_ratio": _safe_ratio(z_ok, count),
+                    "bleu": z_bleu,
+                    "chrf": z_chrf,
+                },
+                "fine_tuned": {
+                    "langid_ok": f_ok,
+                    "langid_ratio": _safe_ratio(f_ok, count),
+                    "bleu": f_bleu,
+                    "chrf": f_chrf,
+                },
+            }
         lines.append("\n")
 
-        if compute_bleu_flag:
-            lines.append("## Overall BLEU\n\n")
+        overall_metrics = {
+            "zero_shot": {"bleu": None, "chrf": None},
+            "fine_tuned": {"bleu": None, "chrf": None},
+        }
+        if compute_bleu_flag or compute_chrf_flag:
+            lines.append("## Overall Metrics\n\n")
             if run_baseline and overall_base_refs:
-                overall_z = compute_bleu(overall_base_refs, overall_base_hyps)
-                lines.append(f"- Zero-shot BLEU (all languages): {_fmt_bleu(overall_z)}\n")
+                if compute_bleu_flag:
+                    overall_metrics["zero_shot"]["bleu"] = compute_bleu(overall_base_refs, overall_base_hyps)
+                    lines.append(f"- Zero-shot BLEU (all languages): {_fmt_bleu(overall_metrics['zero_shot']['bleu'])}\n")
+                if compute_chrf_flag:
+                    overall_metrics["zero_shot"]["chrf"] = compute_chrf(overall_base_refs, overall_base_hyps)
+                    lines.append(f"- Zero-shot chrF (all languages): {_fmt_bleu(overall_metrics['zero_shot']['chrf'])}\n")
             if overall_lora_refs:
-                overall_f = compute_bleu(overall_lora_refs, overall_lora_hyps)
-                lines.append(f"- Fine-tuned BLEU (all languages): {_fmt_bleu(overall_f)}\n")
+                if compute_bleu_flag:
+                    overall_metrics["fine_tuned"]["bleu"] = compute_bleu(overall_lora_refs, overall_lora_hyps)
+                    lines.append(f"- Fine-tuned BLEU (all languages): {_fmt_bleu(overall_metrics['fine_tuned']['bleu'])}\n")
+                if compute_chrf_flag:
+                    overall_metrics["fine_tuned"]["chrf"] = compute_chrf(overall_lora_refs, overall_lora_hyps)
+                    lines.append(f"- Fine-tuned chrF (all languages): {_fmt_bleu(overall_metrics['fine_tuned']['chrf'])}\n")
+            lines.append("\n")
+
+        lines.append("## Language Consistency\n\n")
+        for l in langs:
+            count = len(buckets[l])
+            z_ok = per_lang_metrics[l]["zero_shot"]["langid_ok"]
+            f_ok = per_lang_metrics[l]["fine_tuned"]["langid_ok"]
+            lines.append(f"- `{l}`: zero-shot `{z_ok}/{count}`, fine-tuned `{f_ok}/{count}`\n")
+        lines.append("\n")
+
+        # Optional metadata-aware grouped analysis (if labels are present).
+        grouped = {"emotion": {}, "dialog_act": {}}
+        has_emotion = any((m or {}).get("emotion_at_turn") not in (None, "") for l in langs for m in lora_results[l].get("meta", []))
+        has_act = any((m or {}).get("act_at_turn") not in (None, "") for l in langs for m in lora_results[l].get("meta", []))
+        if has_emotion or has_act:
+            lines.append("## Metadata-aware Analysis\n\n")
+            for l in langs:
+                grouped[l] = {}
+                if has_emotion:
+                    z_grp = _group_metric_by_label(base_results[l] if base_results else {}, "emotion_at_turn", compute_bleu if compute_bleu_flag else compute_chrf)
+                    f_grp = _group_metric_by_label(lora_results[l], "emotion_at_turn", compute_bleu if compute_bleu_flag else compute_chrf)
+                    grouped[l]["by_emotion"] = {"zero_shot": z_grp, "fine_tuned": f_grp}
+                    lines.append(f"- `{l}` emotion groups: zero-shot `{len(z_grp)}`, fine-tuned `{len(f_grp)}`\n")
+                if has_act:
+                    z_grp = _group_metric_by_label(base_results[l] if base_results else {}, "act_at_turn", compute_bleu if compute_bleu_flag else compute_chrf)
+                    f_grp = _group_metric_by_label(lora_results[l], "act_at_turn", compute_bleu if compute_bleu_flag else compute_chrf)
+                    grouped[l]["by_dialog_act"] = {"zero_shot": z_grp, "fine_tuned": f_grp}
+                    lines.append(f"- `{l}` dialog-act groups: zero-shot `{len(z_grp)}`, fine-tuned `{len(f_grp)}`\n")
             lines.append("\n")
 
         if include_examples and run_baseline and base_results is not None and adapter and adapter.exists():
@@ -375,7 +500,61 @@ def main():
         out_path = resolve_path(report_path, dirs["reports"])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text("".join(lines), encoding="utf-8")
+        predictions_path = resolve_path(cfg["outputs"].get("predictions_path", "generations.jsonl"), dirs["reports"])
+        predictions_path.parent.mkdir(parents=True, exist_ok=True)
+        prediction_rows = []
+        for l in langs:
+            total = min(
+                len(base_results[l]["hyps"]) if base_results else 0,
+                len(lora_results[l]["hyps"]),
+                len(lora_results[l]["refs"]),
+            )
+            for i in range(total):
+                meta = (lora_results[l].get("meta") or [{}])[i] or {}
+                prediction_rows.append(
+                    {
+                        "lang": l,
+                        "dialogue_id": meta.get("dialogue_id"),
+                        "turn_index": meta.get("turn_index"),
+                        "emotion_at_turn": meta.get("emotion_at_turn"),
+                        "act_at_turn": meta.get("act_at_turn"),
+                        "prompt": (lora_results[l].get("prompts") or [""])[i],
+                        "reference": (lora_results[l].get("refs") or [""])[i],
+                        "zero_shot": (base_results[l].get("hyps") or [""])[i] if base_results else "",
+                        "fine_tuned": (lora_results[l].get("hyps") or [""])[i],
+                    }
+                )
+        with predictions_path.open("w", encoding="utf-8") as w:
+            for row in prediction_rows:
+                w.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+        metrics_path = resolve_path(cfg["outputs"].get("metrics_path", "eval_metrics.json"), dirs["reports"])
+        metrics_payload = {
+            "script": "07_eval.py",
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "model_name": base,
+            "adapter_dir": str(adapter) if adapter else None,
+            "eval_dataset_path": str(test_path),
+            "requested_samples_per_lang": n,
+            "evaluated_samples_total": int(sum(len(buckets[l]) for l in langs)),
+            "langs": langs,
+            "metrics": {
+                "per_lang": per_lang_metrics,
+                "overall": overall_metrics,
+                "grouped": grouped,
+            },
+            "language_consistency": {
+                l: {
+                    "zero_shot_ok": per_lang_metrics[l]["zero_shot"]["langid_ok"],
+                    "fine_tuned_ok": per_lang_metrics[l]["fine_tuned"]["langid_ok"],
+                    "samples": per_lang_metrics[l]["samples"],
+                }
+                for l in langs
+            },
+        }
+        metrics_path.write_text(json.dumps(metrics_payload, indent=2, ensure_ascii=False), encoding="utf-8")
         logger.info("eval_report_path=%s eval_sample_count_total=%s", out_path, sum(len(buckets[l]) for l in langs))
+        logger.info("predictions_path=%s metrics_path=%s", predictions_path, metrics_path)
         banner(logger, "Step 07: Done", char="-")
     except Exception:
         logger.exception("Step 07 failed")

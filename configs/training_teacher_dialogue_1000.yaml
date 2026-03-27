@@ -11,6 +11,7 @@ data:
 training:
   seed: 42
   max_seq_len: 512
+  max_seq_length: 512
   num_train_epochs: 1
   max_steps: 200
   learning_rate: 2.0e-4
