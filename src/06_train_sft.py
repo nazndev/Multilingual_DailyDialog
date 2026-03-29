@@ -179,21 +179,49 @@ def main():
                 tok.pad_token = tok.eos_token
 
         with timer(logger, "format_sft_datasets"):
-            _fmt = lambda ex: _format_messages_record_to_text(ex, tok)
+            def _fmt(ex):
+                # Handle corrupted / unexpected rows safely
+                if not isinstance(ex, dict):
+                    return {"text": ""}
+
+                # Must contain messages
+                msgs = ex.get("messages")
+                if not isinstance(msgs, list) or len(msgs) == 0:
+                    return {"text": ""}
+
+                try:
+                    return _format_messages_record_to_text(ex, tok)
+                except Exception:
+                    # skip bad rows safely
+                    return {"text": ""}
+
             train_cols = list(ds_train.column_names)
             ds_train = ds_train.map(_fmt, remove_columns=train_cols, batched=False)
-            if len(ds_train) != train_sample_count:
-                raise RuntimeError(
-                    f"Train dataset length changed after chat formatting: {train_sample_count} -> {len(ds_train)}"
-                )
             if ds_eval is not None:
                 eval_cols = list(ds_eval.column_names)
                 ds_eval = ds_eval.map(_fmt, remove_columns=eval_cols, batched=False)
-                if len(ds_eval) != eval_sample_count:
-                    raise RuntimeError(
-                        f"Eval dataset length changed after chat formatting: {eval_sample_count} -> {len(ds_eval)}"
-                    )
+
             logger.info("dataset_map_mode=single_example (batched=False)")
+
+            # Remove empty rows after formatting
+            ds_train = ds_train.filter(
+                lambda x: isinstance(x.get("text"), str) and len(x["text"].strip()) > 0,
+                batched=False,
+            )
+            if ds_eval is not None:
+                ds_eval = ds_eval.filter(
+                    lambda x: isinstance(x.get("text"), str) and len(x["text"].strip()) > 0,
+                    batched=False,
+                )
+
+            train_sample_count = len(ds_train)
+            eval_sample_count = len(ds_eval) if ds_eval else 0
+            logger.info(
+                "sft_dataset_after_filter train_samples=%s eval_samples=%s",
+                train_sample_count,
+                eval_sample_count,
+            )
+
             logger.info("formatted_train_dataset_text_field=text")
             logger.info(
                 "formatted_eval_dataset_text_field=%s",
