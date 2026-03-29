@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import json
 import sys
 import traceback
@@ -83,6 +84,40 @@ def save_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _format_messages_record_to_text(example: dict, tok) -> dict:
+    """
+    Build a single training string from one JSONL record, matching eval-time chat formatting.
+
+    Preference order:
+      1) non-empty ``text`` field (already formatted)
+      2) ``messages`` rendered with ``tokenizer.apply_chat_template(..., tokenize=False)``
+         (full transcript, including the final assistant target — no stripping)
+    """
+    if not isinstance(example, dict):
+        raise ValueError("Each dataset record must be a dict.")
+    text_existing = example.get("text")
+    if isinstance(text_existing, str) and text_existing.strip():
+        return {"text": text_existing.strip()}
+    messages = example.get("messages")
+    if not isinstance(messages, list) or len(messages) == 0:
+        raise ValueError(
+            "Each training record must contain a non-empty 'messages' list or a non-empty 'text' string."
+        )
+    for idx, m in enumerate(messages):
+        if not isinstance(m, dict):
+            raise ValueError(f"messages[{idx}] must be a dict with 'role' and 'content'.")
+        role = m.get("role")
+        content = m.get("content")
+        if not isinstance(role, str) or not role.strip():
+            raise ValueError(f"messages[{idx}] has invalid or missing 'role' (non-empty string required).")
+        if not isinstance(content, str):
+            raise ValueError(f"messages[{idx}] 'content' must be a string.")
+    formatted = tok.apply_chat_template(messages, tokenize=False)
+    if not isinstance(formatted, str) or not formatted.strip():
+        raise ValueError("Chat template formatting produced empty text.")
+    return {"text": formatted}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -135,10 +170,38 @@ def main():
         if resume_from_checkpoint:
             resume_from_checkpoint = str(resolve_path(resume_from_checkpoint, dirs["outputs"]))
 
-        with timer(logger, "load_model_and_tokenizer"):
+        with timer(logger, "load_tokenizer"):
             tok = AutoTokenizer.from_pretrained(base, use_fast=True)
             if tok.pad_token is None:
                 tok.pad_token = tok.eos_token
+
+        with timer(logger, "format_sft_datasets"):
+            _fmt = lambda ex: _format_messages_record_to_text(ex, tok)
+            train_cols = list(ds_train.column_names)
+            ds_train = ds_train.map(_fmt, remove_columns=train_cols)
+            if len(ds_train) != train_sample_count:
+                raise RuntimeError(
+                    f"Train dataset length changed after chat formatting: {train_sample_count} -> {len(ds_train)}"
+                )
+            if ds_eval is not None:
+                eval_cols = list(ds_eval.column_names)
+                ds_eval = ds_eval.map(_fmt, remove_columns=eval_cols)
+                if len(ds_eval) != eval_sample_count:
+                    raise RuntimeError(
+                        f"Eval dataset length changed after chat formatting: {eval_sample_count} -> {len(ds_eval)}"
+                    )
+            logger.info("formatted_train_dataset_text_field=text")
+            logger.info(
+                "formatted_eval_dataset_text_field=%s",
+                "text" if ds_eval is not None else "none",
+            )
+            if len(ds_train) > 0:
+                preview = ds_train[0]["text"]
+                if len(preview) > 300:
+                    preview = preview[:300] + "..."
+                logger.info("formatted_train_preview=%s", preview.replace("\n", "\\n"))
+
+        with timer(logger, "load_model_and_tokenizer"):
             device, device_name = _pick_device()
             logger.info("Selected device=%s", device_name)
             if device_name == "cpu":
@@ -280,35 +343,50 @@ def main():
                 "train_sample_count=%s is small and likely for demo/smoke-test validation.",
                 train_sample_count,
             )
-        args_tr = SFTConfig(
-            output_dir=str(output_dir),
-            per_device_train_batch_size=per_device_bs,
-            per_device_eval_batch_size=per_device_eval_bs,
-            gradient_accumulation_steps=grad_accum,
-            num_train_epochs=num_epochs,
-            max_steps=max_steps,
-            learning_rate=learning_rate,
-            warmup_ratio=float(tr_cfg.get("warmup_ratio", 0.03)),
-            logging_steps=logging_steps,
-            save_steps=save_steps,
-            save_strategy=save_strategy,
-            eval_strategy=eval_strategy,
-            eval_steps=eval_steps,
-            report_to=[],
-            bf16=bf16,
-            fp16=fp16,
-            seed=seed,
-            max_length=max_length,
-            packing=False,
-            gradient_checkpointing=gradient_checkpointing,
-        )
-        trainer = SFTTrainer(
-            model=model,
-            processing_class=tok,
-            train_dataset=ds_train,
-            eval_dataset=ds_eval,
-            args=args_tr,
-        )
+        _sft_cfg_params = inspect.signature(SFTConfig.__init__).parameters
+        _sft_trainer_params = inspect.signature(SFTTrainer.__init__).parameters
+        sft_kw: dict[str, Any] = {
+            "output_dir": str(output_dir),
+            "per_device_train_batch_size": per_device_bs,
+            "per_device_eval_batch_size": per_device_eval_bs,
+            "gradient_accumulation_steps": grad_accum,
+            "num_train_epochs": num_epochs,
+            "max_steps": max_steps,
+            "learning_rate": learning_rate,
+            "warmup_ratio": float(tr_cfg.get("warmup_ratio", 0.03)),
+            "logging_steps": logging_steps,
+            "save_steps": save_steps,
+            "save_strategy": save_strategy,
+            "eval_strategy": eval_strategy,
+            "eval_steps": eval_steps,
+            "report_to": [],
+            "bf16": bf16,
+            "fp16": fp16,
+            "seed": seed,
+            "max_length": max_length,
+            "packing": False,
+            "gradient_checkpointing": gradient_checkpointing,
+        }
+        if "dataset_text_field" in _sft_cfg_params:
+            sft_kw["dataset_text_field"] = "text"
+        args_tr = SFTConfig(**sft_kw)
+        trainer_kw: dict[str, Any] = {
+            "model": model,
+            "processing_class": tok,
+            "train_dataset": ds_train,
+            "eval_dataset": ds_eval,
+            "args": args_tr,
+        }
+        if "dataset_text_field" not in _sft_cfg_params and "dataset_text_field" in _sft_trainer_params:
+            trainer_kw["dataset_text_field"] = "text"
+        if (
+            "dataset_text_field" not in _sft_cfg_params
+            and "dataset_text_field" not in _sft_trainer_params
+        ):
+            logger.warning(
+                "TRL has no dataset_text_field on SFTConfig/SFTTrainer; ensure training uses the 'text' column."
+            )
+        trainer = SFTTrainer(**trainer_kw)
         meta_path = output_dir / "train_run_metadata.json"
         run_meta = {
             "project_task": "multilingual next-utterance generation",

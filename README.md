@@ -49,6 +49,18 @@ Step 1 (translation) expects preprocessed English DailyDialog JSONL files under:
 
 If these files are missing, prepare them before running the pipeline.
 
+## How dialogue rows become SFT examples
+
+Step `src/05_build_sft.py` reads translated JSONL (e.g. `turns_bn`, `turns_en`, `dialogue_id`, optional `emotions` / `dialog_acts`) and writes one JSONL training row per **assistant** reply you want the model to predict.
+
+- **One dialogue → many examples:** For each dialogue, every **odd** turn index (`1, 3, 5, …`) is treated as an assistant utterance. The model is trained to produce that utterance given prior context. Even indices are user turns (DailyDialog-style alternation).
+- **Targets only:** Only those assistant turns become supervised targets; user turns appear in the context, not as the prediction target.
+- **`context_window`:** If `sft.context_window` is positive (e.g. `4`), each example includes only the **last N utterances** before the target turn, in order. If `context_window` is `-1`, the full prefix of the dialogue up to the target is used.
+- **Prompts:** The system string is built only through `src/utils/prompting.py` (`build_system_prompt`), using `sft.prompt` from `configs/translation_1000_api_bn.yaml` (style, short-reply hint, optional `system_template`). Evaluation rebuilds the same logic when decoding so training and eval stay aligned.
+- **Labels:** Integer emotion and dialog-act IDs are mapped to stable lowercase names (DailyDialog conventions) for optional prompt tags and for `emotion_at_turn` / `act_at_turn` fields in each row when the value maps successfully.
+
+See `data/sft/.../build_sft_summary.json` after a run for per-split counts and effective settings.
+
 ## Current validated baseline (0.5B Bengali)
 
 This is the **lightweight, reproducible baseline** you should report when you need a small, fast, cheap run.

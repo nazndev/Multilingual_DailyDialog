@@ -10,13 +10,17 @@ sft:
   # Keep defaults close to old behavior while allowing richer prompt controls.
   source_lang_field: turns_en
   target_lang_field: turns_{lang}
-  context_window: -1
+  # Last N utterances before each assistant target (-1 = full dialogue history).
+  context_window: 4
+  # Optional: inject DailyDialog emotion/act names into the system prompt when true.
+  # use_emotion_tag: true
+  # use_dialog_act_tag: true
   use_emotion_tag: false
   use_dialog_act_tag: false
   min_turns: 2
   max_samples: 0
   output_format: jsonl
-  # Optional: trim serialized history size (0 = unlimited; uses recent turns via context_window first).
+  # Optional: trim serialized history size (0 = unlimited; uses context_window first).
   max_history_chars: 0
   prompt:
     style: default
