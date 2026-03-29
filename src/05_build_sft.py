@@ -165,6 +165,7 @@ def _load_sft_cfg(cfg: dict) -> dict:
         "short_reply_hint": bool(prompt.get("short_reply_hint", False)),
         "system_template": prompt.get("system_template"),
         "max_history_chars": int(sft.get("max_history_chars", 0)),
+        "enforce_user_first_history": bool(sft.get("enforce_user_first_history", True)),
     }
 
 
@@ -189,19 +190,25 @@ def _build_history_before_target(
     target_turns: list[str],
     target_index: int,
     context_window: int,
+    max_history_chars: int,
+    enforce_user_first_history: bool,
 ) -> tuple[list[dict[str, str]], str | None]:
     """
-    Build chronological chat history immediately before the assistant target turn.
+    Build chat history before the assistant target: window slice, char budget trim,
+    then optional leading-assistant removal so the prefix is chat-valid.
 
     DailyDialog-style layout: even indices = user, odd = assistant. The **target**
     is always an assistant turn at odd ``target_index``. Only prior indices
     ``0 .. target_index - 1`` are included.
 
     If ``context_window > 0``, only the **last** ``context_window`` utterances
-    before the target are kept (same chronological order).
+    before the target are kept (chronological order preserved; no reordering).
 
-    Returns (history_messages, skip_reason): skip_reason is set if this example
-    must be dropped (empty slot inside the selected window, or empty history).
+    Order: (1) context window, (2) ``max_history_chars`` trim (oldest first),
+    (3) if ``enforce_user_first_history``, drop leading ``assistant`` messages
+    until the first message is ``user`` or history is empty. A narrow window can
+    start with an assistant turn; that is invalid for user/assistant chat templates,
+    so we trim from the left only.
     """
     n = len(target_turns)
     if context_window <= 0:
@@ -221,6 +228,19 @@ def _build_history_before_target(
 
     if not history_messages:
         return [], "empty_history"
+
+    history_messages = _trim_history_messages(history_messages, max_history_chars)
+    if not history_messages:
+        return [], "empty_history"
+
+    if enforce_user_first_history:
+        while history_messages and history_messages[0].get("role") == "assistant":
+            history_messages = history_messages[1:]
+        if not history_messages:
+            return [], "history_starts_with_assistant"
+        if history_messages[0].get("role") != "user":
+            return [], "history_starts_with_assistant"
+
     return history_messages, None
 
 
@@ -239,6 +259,7 @@ def _collect_examples_for_dialogue(
     emotions,
     dialog_acts,
     context_window: int,
+    enforce_user_first_history: bool,
     use_emotion_tag: bool,
     use_dialog_act_tag: bool,
     prompt_style: str,
@@ -256,6 +277,7 @@ def _collect_examples_for_dialogue(
         "skipped_target_empty": 0,
         "skipped_empty_history": 0,
         "skipped_context_hole": 0,
+        "skipped_history_starts_with_assistant": 0,
     }
     n = len(target_turns)
     # Odd indices are assistant replies; we predict each assistant utterance from prior context.
@@ -266,7 +288,11 @@ def _collect_examples_for_dialogue(
             continue
 
         history_messages, skip_reason = _build_history_before_target(
-            target_turns, target_index, context_window
+            target_turns,
+            target_index,
+            context_window,
+            max_history_chars,
+            enforce_user_first_history,
         )
         if skip_reason == "empty_history":
             skip_stats["skipped_empty_history"] += 1
@@ -274,10 +300,8 @@ def _collect_examples_for_dialogue(
         if skip_reason == "context_hole":
             skip_stats["skipped_context_hole"] += 1
             continue
-
-        history_messages = _trim_history_messages(history_messages, max_history_chars)
-        if not history_messages:
-            skip_stats["skipped_empty_history"] += 1
+        if skip_reason == "history_starts_with_assistant":
+            skip_stats["skipped_history_starts_with_assistant"] += 1
             continue
 
         raw_emotion = _label_at_turn(emotions, target_index)
@@ -334,11 +358,12 @@ def main():
         sft_dir = resolve_path(cfg.get("sft_dir", "sft/multilingual"), dirs["data"])
         sft_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
-            "input_dir=%s output_dir=%s context_window=%s prompt_style=%s short_reply_hint=%s "
-            "use_emotion_tag=%s use_dialog_act_tag=%s",
+            "input_dir=%s output_dir=%s context_window=%s enforce_user_first_history=%s "
+            "prompt_style=%s short_reply_hint=%s use_emotion_tag=%s use_dialog_act_tag=%s",
             in_dir,
             sft_dir,
             context_window,
+            sft_cfg["enforce_user_first_history"],
             sft_cfg["prompt_style"],
             sft_cfg["short_reply_hint"],
             sft_cfg["use_emotion_tag"],
@@ -367,6 +392,7 @@ def main():
             "skipped_target_empty": 0,
             "skipped_empty_history": 0,
             "skipped_context_hole": 0,
+            "skipped_history_starts_with_assistant": 0,
             "average_turns_per_dialogue": 0.0,
             "average_examples_per_dialogue": 0.0,
             "splits": {},
@@ -375,7 +401,7 @@ def main():
         total_skipped_dialogues = 0
         sum_turns_for_avg = 0
         dialogues_with_examples = 0
-        total_sk_target = total_sk_hist = total_sk_hole = 0
+        total_sk_target = total_sk_hist = total_sk_hole = total_sk_asst_first = 0
 
         for split in ["train", "validation", "test"]:
             inp = in_dir / f"{split}.jsonl"
@@ -394,6 +420,7 @@ def main():
             skipped_target_empty = 0
             skipped_empty_history = 0
             skipped_context_hole = 0
+            skipped_history_starts_with_assistant = 0
             context_turn_sum = 0
             examples_buffer = []
             stop_early = False
@@ -450,6 +477,7 @@ def main():
                                 emotions=emotions,
                                 dialog_acts=dialog_acts,
                                 context_window=context_window,
+                                enforce_user_first_history=sft_cfg["enforce_user_first_history"],
                                 use_emotion_tag=sft_cfg["use_emotion_tag"],
                                 use_dialog_act_tag=sft_cfg["use_dialog_act_tag"],
                                 prompt_style=sft_cfg["prompt_style"],
@@ -460,6 +488,7 @@ def main():
                             skipped_target_empty += sk["skipped_target_empty"]
                             skipped_empty_history += sk["skipped_empty_history"]
                             skipped_context_hole += sk["skipped_context_hole"]
+                            skipped_history_starts_with_assistant += sk["skipped_history_starts_with_assistant"]
                             ex_count = 0
                             for ex in ex_list:
                                 if sft_cfg["output_format"] == "jsonl":
@@ -487,12 +516,18 @@ def main():
             avg_context_turns = round(context_turn_sum / written, 2) if written > 0 else 0.0
             avg_turns_per_d = round(sum(turns_per_dialogue) / len(turns_per_dialogue), 2) if turns_per_dialogue else 0.0
             avg_ex_per_d = round(sum(examples_per_dialogue) / len(examples_per_dialogue), 2) if examples_per_dialogue else 0.0
-            skipped_turns_split = skipped_target_empty + skipped_empty_history + skipped_context_hole
+            skipped_turns_split = (
+                skipped_target_empty
+                + skipped_empty_history
+                + skipped_context_hole
+                + skipped_history_starts_with_assistant
+            )
 
             logger.info(
                 "split=%s output=%s output_examples=%s input_dialogues=%s skipped_dialogues=%s "
                 "skipped_malformed=%s skipped_empty=%s skipped_source_mismatch=%s "
-                "skipped_turns=%s (target_empty=%s empty_history=%s context_hole=%s) avg_context_turns=%s",
+                "skipped_turns=%s (target_empty=%s empty_history=%s context_hole=%s "
+                "history_starts_with_assistant=%s) avg_context_turns=%s",
                 split,
                 outp,
                 written,
@@ -505,6 +540,7 @@ def main():
                 skipped_target_empty,
                 skipped_empty_history,
                 skipped_context_hole,
+                skipped_history_starts_with_assistant,
                 avg_context_turns,
             )
             run_summary["splits"][split] = {
@@ -520,9 +556,11 @@ def main():
                 "skipped_target_empty": skipped_target_empty,
                 "skipped_empty_history": skipped_empty_history,
                 "skipped_context_hole": skipped_context_hole,
+                "skipped_history_starts_with_assistant": skipped_history_starts_with_assistant,
                 "avg_context_turns": avg_context_turns,
                 "avg_turns_per_dialogue": avg_turns_per_d,
                 "context_window": context_window,
+                "enforce_user_first_history": sft_cfg["enforce_user_first_history"],
                 "prompt_style": sft_cfg["prompt_style"],
                 "short_reply_hint": sft_cfg["short_reply_hint"],
                 "use_emotion_tag": sft_cfg["use_emotion_tag"],
@@ -543,13 +581,17 @@ def main():
             total_sk_target += skipped_target_empty
             total_sk_hist += skipped_empty_history
             total_sk_hole += skipped_context_hole
+            total_sk_asst_first += skipped_history_starts_with_assistant
 
         run_summary["input_dialogues"] = total_input_dialogues
         run_summary["skipped_dialogues"] = total_skipped_dialogues
-        run_summary["skipped_turns"] = total_sk_target + total_sk_hist + total_sk_hole
+        run_summary["skipped_turns"] = (
+            total_sk_target + total_sk_hist + total_sk_hole + total_sk_asst_first
+        )
         run_summary["skipped_target_empty"] = total_sk_target
         run_summary["skipped_empty_history"] = total_sk_hist
         run_summary["skipped_context_hole"] = total_sk_hole
+        run_summary["skipped_history_starts_with_assistant"] = total_sk_asst_first
         if dialogues_with_examples > 0:
             run_summary["average_turns_per_dialogue"] = round(sum_turns_for_avg / dialogues_with_examples, 4)
         tw = sum(run_summary["output_examples_per_split"].values())

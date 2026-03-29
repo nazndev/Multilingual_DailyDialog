@@ -12,6 +12,8 @@ sft:
   target_lang_field: turns_{lang}
   # Last N utterances before each assistant target (-1 = full dialogue history).
   context_window: 4
+  # After windowing + char trim, drop leading assistant turns so history starts with user (chat-valid).
+  enforce_user_first_history: true
   # Optional: inject DailyDialog emotion/act names into the system prompt when true.
   # use_emotion_tag: true
   # use_dialog_act_tag: true

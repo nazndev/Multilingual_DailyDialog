@@ -4,21 +4,18 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-# Default template: explicit, short-reply oriented; {lang} is substituted per record.
+# Default template: concise next-utterance task; {lang} is substituted per record.
 DEFAULT_SYSTEM_TEMPLATE = (
-    "You are an assistant for multilingual next-utterance generation in language '{lang}'. "
-    "Generate only the next assistant utterance for this conversation. "
-    "Respond directly to the last user message. "
-    "Keep the reply natural, short, conversational, and contextually appropriate. "
-    "Match the tone of the dialogue. "
-    "Do not repeat the history. "
-    "Do not explain, summarize, translate, label, or add extra text. "
+    "Generate only the next assistant utterance in '{lang}'. "
+    "Reply naturally and conversationally to the last user message. "
+    "Keep it brief and contextually appropriate. "
+    "Do not repeat the history or add explanations, labels, or extra text. "
     "Output only the reply in '{lang}'."
 )
 
 SHORT_REPLY_HINT = (
-    "Prefer a brief human-like reply. "
-    "Use one short sentence when it fits the context."
+    "Prefer a short human-like reply. "
+    "Use one sentence when appropriate."
 )
 
 
