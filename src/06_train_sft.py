@@ -94,7 +94,10 @@ def _format_messages_record_to_text(example: dict, tok) -> dict:
          (full transcript, including the final assistant target — no stripping)
     """
     if not isinstance(example, dict):
-        raise ValueError("Each dataset record must be a dict.")
+        raise ValueError(
+            "Each dataset record must be a dict. "
+            "If Dataset.map is used, ensure batched=False."
+        )
     text_existing = example.get("text")
     if isinstance(text_existing, str) and text_existing.strip():
         return {"text": text_existing.strip()}
@@ -178,18 +181,19 @@ def main():
         with timer(logger, "format_sft_datasets"):
             _fmt = lambda ex: _format_messages_record_to_text(ex, tok)
             train_cols = list(ds_train.column_names)
-            ds_train = ds_train.map(_fmt, remove_columns=train_cols)
+            ds_train = ds_train.map(_fmt, remove_columns=train_cols, batched=False)
             if len(ds_train) != train_sample_count:
                 raise RuntimeError(
                     f"Train dataset length changed after chat formatting: {train_sample_count} -> {len(ds_train)}"
                 )
             if ds_eval is not None:
                 eval_cols = list(ds_eval.column_names)
-                ds_eval = ds_eval.map(_fmt, remove_columns=eval_cols)
+                ds_eval = ds_eval.map(_fmt, remove_columns=eval_cols, batched=False)
                 if len(ds_eval) != eval_sample_count:
                     raise RuntimeError(
                         f"Eval dataset length changed after chat formatting: {eval_sample_count} -> {len(ds_eval)}"
                     )
+            logger.info("dataset_map_mode=single_example (batched=False)")
             logger.info("formatted_train_dataset_text_field=text")
             logger.info(
                 "formatted_eval_dataset_text_field=%s",
