@@ -5,6 +5,7 @@ import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Optional
 
 import torch
@@ -84,7 +85,7 @@ def save_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def _format_messages_record_to_text(example: dict, tok) -> dict:
+def _format_messages_record_to_text(example: Mapping, tok) -> dict:
     """
     Build a single training string from one JSONL record, matching eval-time chat formatting.
 
@@ -93,11 +94,11 @@ def _format_messages_record_to_text(example: dict, tok) -> dict:
       2) ``messages`` rendered with ``tokenizer.apply_chat_template(..., tokenize=False)``
          (full transcript, including the final assistant target — no stripping)
     """
-    if not isinstance(example, dict):
+    if not isinstance(example, Mapping):
         raise ValueError(
-            "Each dataset record must be a dict. "
-            "If Dataset.map is used, ensure batched=False."
+            "Each dataset record must be a mapping-like object with 'messages' or 'text'."
         )
+    example = dict(example)
     text_existing = example.get("text")
     if isinstance(text_existing, str) and text_existing.strip():
         return {"text": text_existing.strip()}
@@ -106,16 +107,19 @@ def _format_messages_record_to_text(example: dict, tok) -> dict:
         raise ValueError(
             "Each training record must contain a non-empty 'messages' list or a non-empty 'text' string."
         )
+    normalized_messages: list[dict] = []
     for idx, m in enumerate(messages):
-        if not isinstance(m, dict):
-            raise ValueError(f"messages[{idx}] must be a dict with 'role' and 'content'.")
-        role = m.get("role")
-        content = m.get("content")
+        if not isinstance(m, Mapping):
+            raise ValueError(f"messages[{idx}] must be a mapping with 'role' and 'content'.")
+        md = dict(m)
+        role = md.get("role")
+        content = md.get("content")
         if not isinstance(role, str) or not role.strip():
             raise ValueError(f"messages[{idx}] has invalid or missing 'role' (non-empty string required).")
         if not isinstance(content, str):
             raise ValueError(f"messages[{idx}] 'content' must be a string.")
-    formatted = tok.apply_chat_template(messages, tokenize=False)
+        normalized_messages.append(md)
+    formatted = tok.apply_chat_template(normalized_messages, tokenize=False)
     if not isinstance(formatted, str) or not formatted.strip():
         raise ValueError("Chat template formatting produced empty text.")
     return {"text": formatted}
@@ -180,11 +184,12 @@ def main():
 
         with timer(logger, "format_sft_datasets"):
             def _fmt(ex):
-                # Handle corrupted / unexpected rows safely
-                if not isinstance(ex, dict):
+                # Accept HuggingFace row types (mapping-like)
+                if not isinstance(ex, Mapping):
                     return {"text": ""}
 
-                # Must contain messages
+                ex = dict(ex)
+
                 msgs = ex.get("messages")
                 if not isinstance(msgs, list) or len(msgs) == 0:
                     return {"text": ""}
@@ -192,7 +197,6 @@ def main():
                 try:
                     return _format_messages_record_to_text(ex, tok)
                 except Exception:
-                    # skip bad rows safely
                     return {"text": ""}
 
             train_cols = list(ds_train.column_names)
