@@ -1,0 +1,43 @@
+# Evaluation config for final training runs (training_final.yaml).
+
+model:
+  base_model: Qwen/Qwen2.5-0.5B-Instruct
+  load_in_4bit: false
+  load_in_8bit: false
+  torch_dtype: null
+  device_map: null
+  lora_adapter_dir: model_final/lora_adapter
+
+data:
+  test_path: sft/multilingual_1000/test.jsonl
+
+evaluation:
+  run_baseline: true
+  compute_bleu: true
+  compute_chrf: true
+  compute_bertscore: false
+  num_samples_per_lang: 200
+  langs: [bn]
+  max_new_tokens: 96
+  generation:
+    max_new_tokens: 96
+    do_sample: false
+    temperature: 1.0
+    top_p: 1.0
+    num_beams: 1
+    repetition_penalty: 1.0
+    eos_token_id_mode: auto
+  prompt:
+    style: default
+    short_reply_hint: true
+    use_emotion_tag: false
+    use_dialog_act_tag: false
+    system_template: null
+
+outputs:
+  report_path: eval_report_final.md
+  metrics_path: eval_metrics_final.json
+  predictions_path: generations_final.jsonl
+  include_samples: true
+  num_samples_per_lang: 5
+  samples_format: blocks

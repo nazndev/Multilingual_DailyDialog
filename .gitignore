@@ -1,0 +1,46 @@
+# Env and secrets (never commit tokens)
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Python
+.venv/
+.venv*/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.ipynb_checkpoints/
+
+# Generated data and model outputs
+outputs/
+outputs/temp/
+outputs/**/checkpoint-*/
+outputs/**/*.safetensors
+outputs/**/*.bin
+outputs/**/*.pt
+reports/
+logs/
+cache/
+*.log
+
+# Data artifacts are generated; keep repository source-focused.
+data/*
+!data/.gitkeep
+
+# IDE / editor / OS
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+.DS_Store
+
+# Temp / non-project
+src/tt
+agent-transcripts/
+*.tmp

@@ -1,0 +1,38 @@
+# Submission-oriented training config (heavier than training_demo.yaml).
+base_model: Qwen/Qwen2.5-0.5B-Instruct
+
+model:
+  load_in_4bit: false
+  load_in_8bit: false
+  torch_dtype: null
+  device_map: null
+
+data:
+  train_path: sft/multilingual_1000/train.jsonl
+  eval_path: sft/multilingual_1000/validation.jsonl
+
+training:
+  seed: 42
+  max_seq_len: 512
+  max_seq_length: 512
+  num_train_epochs: 3
+  max_steps: 400
+  learning_rate: 2.0e-4
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  warmup_ratio: 0.03
+  logging_steps: 5
+  save_steps: 50
+  output_dir: model_final
+  gradient_checkpointing: false
+
+lora:
+  enabled: true
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: null
+
+precision:
+  bf16: auto
+  fp16: auto

@@ -1,0 +1,46 @@
+# API translation (OpenAI) for the 1000-dialogue subset (800/200/200).
+# Produces translated JSONL with turns_bn and preserves labels.
+# Run with env: TARGET_LANGS=bn TRANSLATION_BACKEND=api OPENAI_API_KEY=...
+
+processed_dir: processed_1000
+out_dir: translated_api_1000_bn
+sft_dir: sft/multilingual_1000
+
+sft:
+  # Keep defaults close to old behavior while allowing richer prompt controls.
+  source_lang_field: turns_en
+  target_lang_field: turns_{lang}
+  # Last N utterances before each assistant target (-1 = full dialogue history).
+  context_window: 4
+  # After windowing + char trim, drop leading assistant turns so history starts with user (chat-valid).
+  enforce_user_first_history: true
+  # Optional: inject DailyDialog emotion/act names into the system prompt when true.
+  # use_emotion_tag: true
+  # use_dialog_act_tag: true
+  use_emotion_tag: false
+  use_dialog_act_tag: false
+  min_turns: 2
+  max_samples: 0
+  output_format: jsonl
+  # Optional: trim serialized history size (0 = unlimited; uses context_window first).
+  max_history_chars: 0
+  prompt:
+    style: default
+    short_reply_hint: true
+    # Optional override; must include {lang} or use placeholders emotion/dialog_act when tags are on.
+    system_template: null
+
+# Cache stores per-turn translations (even though we request per-dialogue batches)
+cache:
+  dir: translation_api_1000_bn
+
+backend: api
+
+targets: [bn]
+
+api:
+  provider: openai
+  model: gpt-4.1
+  max_tokens: 1024
+  max_retries: 3
+  sleep_between_retries_sec: 1

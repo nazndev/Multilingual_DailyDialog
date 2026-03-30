@@ -1,0 +1,44 @@
+# Evaluation for Qwen2.5-7B QLoRA runs (training_7b_qlora_bn.yaml).
+# Uses 4-bit loading for GPU memory; same Bengali test path as 0.5B evals.
+
+model:
+  base_model: Qwen/Qwen2.5-7B-Instruct
+  load_in_4bit: true
+  load_in_8bit: false
+  torch_dtype: bfloat16
+  device_map: auto
+  lora_adapter_dir: model_7b_qlora_bn/lora_adapter
+
+data:
+  test_path: sft/multilingual_1000/test.jsonl
+
+evaluation:
+  run_baseline: true
+  compute_bleu: true
+  compute_chrf: true
+  compute_bertscore: false
+  num_samples_per_lang: 200
+  langs: [bn]
+  max_new_tokens: 96
+  generation:
+    max_new_tokens: 96
+    do_sample: false
+    temperature: 1.0
+    top_p: 1.0
+    num_beams: 1
+    repetition_penalty: 1.0
+    eos_token_id_mode: auto
+  prompt:
+    style: default
+    short_reply_hint: true
+    use_emotion_tag: false
+    use_dialog_act_tag: false
+    system_template: null
+
+outputs:
+  report_path: eval_report_7b_qlora_bn.md
+  metrics_path: eval_metrics_7b_qlora_bn.json
+  predictions_path: generations_7b_qlora_bn.jsonl
+  include_samples: true
+  num_samples_per_lang: 5
+  samples_format: blocks

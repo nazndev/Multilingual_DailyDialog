@@ -1,0 +1,46 @@
+# Optional larger-model path: Qwen2.5-7B-Instruct with 4-bit QLoRA (T4-friendly defaults).
+# Requires: pip install bitsandbytes (see README).
+base_model: Qwen/Qwen2.5-7B-Instruct
+
+model:
+  load_in_4bit: true
+  load_in_8bit: false
+  torch_dtype: bfloat16
+  device_map: auto
+
+data:
+  train_path: sft/multilingual_1000/train.jsonl
+  eval_path: sft/multilingual_1000/validation.jsonl
+
+training:
+  seed: 42
+  max_seq_len: 512
+  max_seq_length: 512
+  num_train_epochs: 2
+  max_steps: 400
+  learning_rate: 2.0e-4
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  warmup_ratio: 0.03
+  logging_steps: 5
+  save_steps: 50
+  output_dir: model_7b_qlora_bn
+  gradient_checkpointing: true
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+precision:
+  bf16: true
+  fp16: false
