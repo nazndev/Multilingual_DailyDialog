@@ -27,6 +27,7 @@ Optional larger-model path (separate configs; does not replace the 0.5B baseline
 
 ```text
 configs/training_7b_qlora_bn.yaml  →  configs/eval_7b_qlora_bn.yaml
+configs/training_qwen3_4b_qlora_bn.yaml  →  configs/eval_qwen3_4b_qlora_bn.yaml
 ```
 
 ## Setup
@@ -82,6 +83,16 @@ This path is **optional** and **stronger but heavier** than the 0.5B baseline. I
 
 This repository does **not** claim numerical results for 7B until you run those configs locally.
 
+## Optional Qwen3-4B experiment
+
+If you want to test a stronger model without changing the SFT format, use the dedicated Qwen3-4B configs:
+
+- **Train:** `configs/training_qwen3_4b_qlora_bn.yaml`
+- **Eval:** `configs/eval_qwen3_4b_qlora_bn.yaml`
+- **Model:** `Qwen/Qwen3-4B`
+- **Why no SFT change is needed:** the training data already uses chat-style `messages`, and both training and evaluation apply the tokenizer chat template from the model/tokenizer side.
+- **Colab note:** this path uses 4-bit QLoRA with gradient checkpointing and conservative batch settings similar to the 7B path.
+
 ## Checkpoint selection
 
 Training saves periodic checkpoints under the run output directory (e.g. `outputs/model_final/checkpoint-50`, `checkpoint-100`, …), with `save_steps` controlling spacing. The script also writes a final adapter to `outputs/<run>/lora_adapter/` after training completes.
@@ -106,7 +117,8 @@ Repeat for other checkpoints and compare metrics under `reports/` using the same
 | Training (smoke) | `configs/training_demo.yaml` |
 | Training (heavier) | `configs/training_final.yaml` |
 | Training (7B QLoRA, optional) | `configs/training_7b_qlora_bn.yaml` |
-| Eval (demo / final / 7B) | `configs/eval_demo.yaml`, `configs/eval_final.yaml`, `configs/eval_7b_qlora_bn.yaml` |
+| Training (Qwen3-4B QLoRA, optional) | `configs/training_qwen3_4b_qlora_bn.yaml` |
+| Eval (demo / final / 7B / Qwen3-4B) | `configs/eval_demo.yaml`, `configs/eval_final.yaml`, `configs/eval_7b_qlora_bn.yaml`, `configs/eval_qwen3_4b_qlora_bn.yaml` |
 
 SFT prompts and builder options (`sft.*`, including `sft.prompt`) are read from the translation config. Training and evaluation share the same default system prompt text via `src/utils/prompting.py`.
 
@@ -128,10 +140,14 @@ python src/06_train_sft.py --config configs/training_final.yaml
 # 3c) Optional 7B QLoRA
 python src/06_train_sft.py --config configs/training_7b_qlora_bn.yaml
 
+# 3d) Optional Qwen3-4B QLoRA
+python src/06_train_sft.py --config configs/training_qwen3_4b_qlora_bn.yaml
+
 # 4) Evaluate
 python src/07_eval.py --config configs/eval_demo.yaml
 python src/07_eval.py --config configs/eval_final.yaml
 python src/07_eval.py --config configs/eval_7b_qlora_bn.yaml
+python src/07_eval.py --config configs/eval_qwen3_4b_qlora_bn.yaml
 ```
 
 `BASE_MODEL` can still override the config when set in the environment; configs are preferred for reproducibility.
@@ -147,6 +163,8 @@ make eval-demo
 make eval-final
 make train-7b
 make eval-7b
+make train-qwen3-4b
+make eval-qwen3-4b
 make pipeline-demo
 make pipeline-final
 ```
@@ -166,6 +184,7 @@ Typical artifacts:
 - SFT data: `data/sft/multilingual_1000/*.jsonl`
 - SFT build summary: `data/sft/multilingual_1000/build_sft_summary.json`
 - LoRA adapter: `outputs/model_demo/lora_adapter/`, `outputs/model_final/lora_adapter/`, or `outputs/model_7b_qlora_bn/lora_adapter/`
+- LoRA adapter: `outputs/model_demo/lora_adapter/`, `outputs/model_final/lora_adapter/`, `outputs/model_7b_qlora_bn/lora_adapter/`, or `outputs/model_qwen3_4b_qlora_bn/lora_adapter/`
 - Training checkpoints: `outputs/<run>/checkpoint-*`
 - Training metadata: `outputs/<run>/train_run_metadata.json`
 - Eval report, metrics, and JSONL generations: `reports/`
