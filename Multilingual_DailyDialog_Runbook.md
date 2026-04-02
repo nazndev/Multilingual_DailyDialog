@@ -90,7 +90,40 @@ python src/06_train_sft.py \
 
 ---
 
-## 11. Evaluate 7B
+## 11. Train 3B QLoRA (Optional fair smaller-model comparison)
+```bash
+python src/06_train_sft.py \
+  --config configs/training_3b_qlora_bn.yaml
+```
+
+Expected training artifacts:
+```bash
+ls -R $OUTPUTS_DIR/model_3b_qlora_bn
+```
+
+Exact expected paths:
+- `$OUTPUTS_DIR/model_3b_qlora_bn`
+- `$OUTPUTS_DIR/model_3b_qlora_bn/lora_adapter`
+
+Optional pre-flight checks before training:
+```python
+from transformers import AutoTokenizer
+tok = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-3B-Instruct", use_fast=True)
+print(bool(getattr(tok, "chat_template", None)))
+print((tok.chat_template or "")[:400])
+```
+
+```python
+from transformers import AutoModelForCausalLM
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-3B-Instruct")
+wanted = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+found = {name.split(".")[-1] for name, _ in model.named_modules()}
+print("missing:", sorted(wanted - found))
+```
+
+---
+
+## 12. Evaluate 7B
 ```bash
 python src/07_eval.py \
   --config configs/eval_7b_qlora_bn.yaml
@@ -98,7 +131,29 @@ python src/07_eval.py \
 
 ---
 
-## 12. Check Outputs
+## 13. Evaluate 3B
+```bash
+python src/07_eval.py \
+  --config configs/eval_3b_qlora_bn.yaml
+```
+
+Expected evaluation artifacts:
+```bash
+ls $REPORTS_DIR/eval_report_3b_qlora_bn.md
+ls $REPORTS_DIR/eval_metrics_3b_qlora_bn.json
+ls $REPORTS_DIR/generations_3b_qlora_bn.jsonl
+```
+
+Exact expected report paths:
+- `$REPORTS_DIR/eval_report_3b_qlora_bn.md`
+- `$REPORTS_DIR/eval_metrics_3b_qlora_bn.json`
+- `$REPORTS_DIR/generations_3b_qlora_bn.jsonl`
+
+Metrics note: run locally to populate metrics for the new 3B path.
+
+---
+
+## 14. Check Outputs
 ```bash
 ls -R $OUTPUTS_DIR
 ls -R $REPORTS_DIR
@@ -106,22 +161,23 @@ ls -R $REPORTS_DIR
 
 ---
 
-## 13. Check Metrics
+## 15. Check Metrics
 ```bash
 cat $REPORTS_DIR/eval_metrics_final.json
+cat $REPORTS_DIR/eval_metrics_3b_qlora_bn.json
 cat $REPORTS_DIR/eval_metrics_7b_qlora_bn.json
 ```
 
 ---
 
-## 14. GPU Memory Fix (if needed)
+## 16. GPU Memory Fix (if needed)
 ```bash
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 ```
 
 ---
 
-## 15. Always Start Session With
+## 17. Always Start Session With
 ```bash
 cd /content/drive/MyDrive/Multilingual_DailyDialog/Multilingual_DailyDialog
 git pull
@@ -133,7 +189,9 @@ git pull
 1. Build SFT  
 2. Train 0.5B  
 3. Evaluate 0.5B  
-4. Train 7B  
-5. Evaluate 7B  
-6. Compare results  
+4. Train 3B  
+5. Evaluate 3B  
+6. Train 7B  
+7. Evaluate 7B  
+8. Compare results locally after metrics are generated  
 

@@ -1,4 +1,4 @@
-.PHONY: venv install translate build-sft train-demo train-final train-7b train-qwen3-4b eval-demo eval-final eval-7b eval-qwen3-4b pipeline-demo pipeline-final
+.PHONY: venv install translate build-sft train-demo train-final train-3b train-7b eval-demo eval-final eval-3b eval-7b pipeline-demo pipeline-final
 
 ifneq (,$(wildcard .env))
 include .env
@@ -26,23 +26,23 @@ train-demo:
 train-final:
 	BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct $(PYTHON) src/06_train_sft.py --config configs/training_final.yaml
 
+train-3b:
+	$(PYTHON) src/06_train_sft.py --config configs/training_3b_qlora_bn.yaml
+
 eval-demo:
 	BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct $(PYTHON) src/07_eval.py --config configs/eval_demo.yaml
 
 eval-final:
 	BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct $(PYTHON) src/07_eval.py --config configs/eval_final.yaml
 
+eval-3b:
+	$(PYTHON) src/07_eval.py --config configs/eval_3b_qlora_bn.yaml
+
 train-7b:
 	$(PYTHON) src/06_train_sft.py --config configs/training_7b_qlora_bn.yaml
 
-train-qwen3-4b:
-	$(PYTHON) src/06_train_sft.py --config configs/training_qwen3_4b_qlora_bn.yaml
-
 eval-7b:
 	$(PYTHON) src/07_eval.py --config configs/eval_7b_qlora_bn.yaml
-
-eval-qwen3-4b:
-	$(PYTHON) src/07_eval.py --config configs/eval_qwen3_4b_qlora_bn.yaml
 
 pipeline-demo: translate build-sft train-demo eval-demo
 

@@ -140,7 +140,43 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 
 ---
 
-## 9) Evaluate (7B QLoRA — Optional)
+## 9) Train (3B QLoRA — Optional fair smaller-model comparison)
+```python
+import torch
+torch.cuda.empty_cache()
+
+%cd $REPO_DIR
+!python src/06_train_sft.py --config configs/training_3b_qlora_bn.yaml
+```
+
+Optional pre-flight checks:
+```python
+from transformers import AutoTokenizer
+tok = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-3B-Instruct", use_fast=True)
+print(bool(getattr(tok, "chat_template", None)))
+print((tok.chat_template or "")[:400])
+```
+
+```python
+from transformers import AutoModelForCausalLM
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-3B-Instruct")
+wanted = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+found = {name.split(".")[-1] for name, _ in model.named_modules()}
+print("missing:", sorted(wanted - found))
+```
+
+Expected artifacts after training:
+```python
+!find "$OUTPUTS_DIR/model_3b_qlora_bn" -maxdepth 4 -type f | sort
+```
+
+Exact expected training paths:
+- `outputs/model_3b_qlora_bn`
+- `outputs/model_3b_qlora_bn/lora_adapter`
+
+---
+
+## 10) Evaluate (7B QLoRA — Optional)
 ```python
 %cd $REPO_DIR
 !BASE_MODEL=Qwen/Qwen2.5-7B-Instruct python src/07_eval.py --config configs/eval_7b_qlora_bn.yaml
@@ -153,6 +189,29 @@ Verify:
 
 ---
 
+## 11) Evaluate (3B QLoRA — Optional)
+```python
+%cd $REPO_DIR
+!python src/07_eval.py --config configs/eval_3b_qlora_bn.yaml
+```
+
+Expected artifacts after evaluation:
+```python
+!find "$REPORTS_DIR" -maxdepth 4 -type f | sort
+```
+
+Metric placeholders:
+```python
+print("Run locally to populate eval_report_3b_qlora_bn.md, eval_metrics_3b_qlora_bn.json, and generations_3b_qlora_bn.jsonl")
+```
+
+Exact expected report paths:
+- `reports/eval_report_3b_qlora_bn.md`
+- `reports/eval_metrics_3b_qlora_bn.json`
+- `reports/generations_3b_qlora_bn.jsonl`
+
+---
+
 ## FINAL ORDER
 1. Setup Drive
 2. Sync Repo
@@ -160,5 +219,7 @@ Verify:
 4. Rebuild SFT
 5. Train (0.5B)
 6. Evaluate (0.5B)
-7. Train (7B)
-8. Evaluate (7B)
+7. Train (3B)
+8. Evaluate (3B)
+9. Train (7B)
+10. Evaluate (7B)

@@ -1,6 +1,6 @@
-# Optional larger-model path: Qwen3-4B with 4-bit QLoRA (Colab/T4-friendly).
-# Official model id: Qwen/Qwen3-4B
-base_model: Qwen/Qwen3-4B
+# Optional smaller-model path: Qwen2.5-3B-Instruct with 4-bit QLoRA (fair 7B-family comparison).
+# Requires: pip install bitsandbytes (see README).
+base_model: Qwen/Qwen2.5-3B-Instruct
 
 model:
   load_in_4bit: true
@@ -24,7 +24,7 @@ training:
   warmup_ratio: 0.03
   logging_steps: 5
   save_steps: 50
-  output_dir: model_qwen3_4b_qlora_bn
+  output_dir: model_3b_qlora_bn
   gradient_checkpointing: true
 
 lora:
