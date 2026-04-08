@@ -1,0 +1,42 @@
+# Same as training_demo.yaml but no validation file during training.
+# Skips per-step eval on 787 rows (very slow on MPS/CPU). Use for local end-to-end checks;
+# then run src/07_eval.py on the real test split for metrics.
+#
+#   BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct python src/06_train_sft.py --config configs/training_demo_local.yaml
+
+base_model: Qwen/Qwen2.5-0.5B-Instruct
+
+model:
+  load_in_4bit: false
+  load_in_8bit: false
+  torch_dtype: null
+  device_map: null
+
+data:
+  train_path: sft/multilingual_1000/train.jsonl
+
+training:
+  seed: 42
+  max_seq_len: 384
+  max_seq_length: 384
+  num_train_epochs: 1
+  max_steps: 20
+  learning_rate: 2.0e-4
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 2
+  warmup_ratio: 0.03
+  logging_steps: 1
+  save_steps: 10
+  output_dir: model_demo
+  gradient_checkpointing: false
+
+lora:
+  enabled: true
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: null
+
+precision:
+  bf16: auto
+  fp16: auto

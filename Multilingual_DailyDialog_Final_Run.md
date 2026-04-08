@@ -63,7 +63,7 @@ if not os.path.exists(os.path.join(REPO_DIR, ".git")):
 %cd $REPO_DIR
 !grep -vE '^\s*torch\b' requirements.txt > /tmp/requirements_no_torch.txt
 !pip -q install -r /tmp/requirements_no_torch.txt
-!pip -q install sentencepiece protobuf accelerate bitsandbytes
+!pip -q install sentencepiece protobuf accelerate bitsandbytes bert-score
 
 
 ---
@@ -210,6 +210,63 @@ Exact expected report paths:
 - `reports/eval_metrics_3b_qlora_bn.json`
 - `reports/generations_3b_qlora_bn.jsonl`
 
+**Metrics:** 7B/3B eval configs use BLEU (`flores200`), chrF, and BERTScore when `bert-score` imports successfully. BERTScore is included because BLEU is very strict on open-ended dialogue; chrF remains useful for Bangla.
+
+---
+
+## 12) Train (Gemma 2 2B IT QLoRA — optional)
+
+Same SFT files as Qwen (`data/sft/multilingual_1000/*.jsonl`). Gemma IT expects `user` / `model` chat roles only; `src/06_train_sft.py` folds `system` into the first `user` turn and maps `assistant` → `model` before `apply_chat_template`—the stored JSONL is not changed.
+
+Optional pre-flight checks:
+
+```python
+from transformers import AutoTokenizer
+tok = AutoTokenizer.from_pretrained("google/gemma-2-2b-it", use_fast=True)
+print(bool(getattr(tok, "chat_template", None)))
+print((tok.chat_template or "")[:400])
+```
+
+```python
+from transformers import AutoModelForCausalLM
+model = AutoModelForCausalLM.from_pretrained("google/gemma-2-2b-it")
+wanted = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+found = {name.split(".")[-1] for name, _ in model.named_modules()}
+print("missing:", sorted(wanted - found))
+```
+
+```python
+import torch
+torch.cuda.empty_cache()
+
+%cd $REPO_DIR
+!python src/06_train_sft.py --config configs/training_gemma2_2b_it_qlora_bn.yaml
+```
+
+Expected training paths:
+- `outputs/model_gemma2_2b_it_qlora_bn`
+- `outputs/model_gemma2_2b_it_qlora_bn/lora_adapter`
+
+---
+
+## 13) Evaluate (Gemma 2 2B IT QLoRA — optional)
+
+```python
+%cd $REPO_DIR
+!python src/07_eval.py --config configs/eval_gemma2_2b_it_qlora_bn.yaml
+```
+
+Verify:
+
+```python
+!cat "$REPORTS_DIR/eval_metrics_gemma2_2b_it_qlora_bn.json"
+```
+
+Exact expected report paths:
+- `reports/eval_report_gemma2_2b_it_qlora_bn.md`
+- `reports/eval_metrics_gemma2_2b_it_qlora_bn.json`
+- `reports/generations_gemma2_2b_it_qlora_bn.jsonl`
+
 ---
 
 ## FINAL ORDER
@@ -223,3 +280,5 @@ Exact expected report paths:
 8. Evaluate (3B)
 9. Train (7B)
 10. Evaluate (7B)
+11. *(Optional)* Train (Gemma 2 2B IT)
+12. *(Optional)* Evaluate (Gemma 2 2B IT)

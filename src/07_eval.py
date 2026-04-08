@@ -2,7 +2,7 @@
 Evaluation for multilingual next-utterance generation:
 - language-ID consistency
 - zero-shot (base) vs fine-tuned (LoRA) comparison
-- BLEU / chrF automatic metrics
+- BLEU / chrF / optional BERTScore automatic metrics
 Artifacts are written under REPORTS_DIR using config paths.
 """
 import argparse
@@ -22,7 +22,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.utils.env import get_dirs, get_env, get_langs, resolve_path
 from src.utils.logging_utils import setup_logger, banner, log_config_safely, log_env_safely, timer
-from src.utils.prompting import messages_for_generation_from_record
+from src.utils.prompting import (
+    MODEL_FAMILY_DEFAULT,
+    MODEL_FAMILY_GEMMA,
+    messages_for_generation_from_record,
+)
 
 
 def load_cfg(path: str) -> dict:
@@ -51,6 +55,8 @@ def _format_messages_for_display(messages: list, max_chars: int = 800) -> str:
             parts.append(f"[user] {content}")
         elif role == "assistant":
             parts.append(f"[assistant] {content}")
+        elif role == "model":
+            parts.append(f"[model] {content}")
         else:
             parts.append(content)
     s = "\n".join(parts).strip()
@@ -246,10 +252,15 @@ def _append_samples_table(
         lines.append("\n")
 
 
-def compute_bleu(refs, hyps):
+def _resolve_bleu_tokenizer(eval_cfg: dict) -> str:
+    tok = str(eval_cfg.get("bleu_tokenizer", "flores200")).strip()
+    return tok or "flores200"
+
+
+def compute_bleu(refs, hyps, bleu_tokenizer: str = "flores200"):
     try:
         import sacrebleu
-        bleu = sacrebleu.corpus_bleu(hyps, [refs])
+        bleu = sacrebleu.corpus_bleu(hyps, [refs], tokenize=bleu_tokenizer)
         return round(bleu.score, 2)
     except Exception:
         return None
@@ -264,15 +275,37 @@ def compute_chrf(refs, hyps):
         return None
 
 
+_BERTSCORE_LANG_MAP = {"bn": "bn", "en": "en", "de": "de", "fr": "fr"}
+
+
+def resolve_bertscore_lang(lang: str) -> str:
+    """Map eval language codes to bert-score ``lang``; unknown codes pass through for a best-effort try."""
+    key = (lang or "en").strip().lower()
+    return _BERTSCORE_LANG_MAP.get(key, key)
+
+
 def compute_bertscore_optional(hyps, refs, lang: str):
     """Return mean F1 or None if bert-score is unavailable or fails."""
     try:
         from bert_score import score as bert_score_fn
-        # bert_score.score(cands, refs, ...): cands = hypotheses, refs = references.
-        _, _, f1 = bert_score_fn(hyps, refs, lang=lang if lang in ("en", "fr", "de") else "en")
-        return round(f1.mean().item(), 4)
     except Exception:
         return None
+    primary = resolve_bertscore_lang(lang)
+    candidates: list[str] = []
+    for cand in (primary, "en"):
+        if cand and cand not in candidates:
+            candidates.append(cand)
+    for cand in candidates:
+        try:
+            _, _, f1 = bert_score_fn(hyps, refs, lang=cand)
+            return round(f1.mean().item(), 4)
+        except Exception:
+            continue
+    return None
+
+
+def _is_gemma_model(model_id: str) -> bool:
+    return "gemma" in (model_id or "").lower()
 
 
 def _fmt_bleu(x):
@@ -291,6 +324,7 @@ def _group_metrics_by_label(
     compute_chrf_flag: bool,
     compute_bert_flag: bool,
     bert_lang: str,
+    bleu_tokenizer: str,
 ):
     """Aggregate BLEU/chrF/BERTScore per label when labels are present on metadata rows."""
     groups: dict[str, dict[str, Any]] = {}
@@ -311,7 +345,7 @@ def _group_metrics_by_label(
         r, h = val["refs"], val["hyps"]
         out[label] = {
             "count": len(r),
-            "bleu": compute_bleu(r, h) if compute_bleu_flag and r else None,
+            "bleu": compute_bleu(r, h, bleu_tokenizer) if compute_bleu_flag and r else None,
             "chrf": compute_chrf(r, h) if compute_chrf_flag and r else None,
             "bertscore_f1": compute_bertscore_optional(h, r, bert_lang) if compute_bert_flag and r else None,
         }
@@ -386,6 +420,10 @@ def main():
         logger.info("test_path=%s base_model=%s adapter=%s", test_path, base, adapter)
 
         eval_cfg = cfg.get("evaluation", {}) or {}
+        bleu_tokenizer = _resolve_bleu_tokenizer(eval_cfg)
+        logger.info("bleu_tokenizer=%s", bleu_tokenizer)
+        model_family = MODEL_FAMILY_GEMMA if _is_gemma_model(base) else MODEL_FAMILY_DEFAULT
+        logger.info("model_family=%s", model_family)
         prompt_cfg = eval_cfg.get("prompt") if isinstance(eval_cfg.get("prompt"), dict) else {}
         prompt_kwargs = {
             "use_emotion_tag": bool(prompt_cfg.get("use_emotion_tag", eval_cfg.get("use_emotion_tag", False))),
@@ -393,6 +431,7 @@ def main():
             "short_reply_hint": bool(prompt_cfg.get("short_reply_hint", False)),
             "style": str(prompt_cfg.get("style", "default")).strip(),
             "system_template": prompt_cfg.get("system_template"),
+            "model_family": model_family,
         }
 
         with timer(logger, "load_dataset"):
@@ -455,7 +494,9 @@ def main():
             f"`top_p={gen_meta['top_p']}`, `num_beams={gen_meta['num_beams']}`, "
             f"`max_new_tokens={gen_meta['max_new_tokens']}`, `repetition_penalty={gen_meta['repetition_penalty']}`, "
             f"`eos_token_id_mode={gen_meta['eos_token_id_mode']}`\n",
-            f"- Metrics: BLEU={compute_bleu_flag}, chrF={compute_chrf_flag}, BERTScore={compute_bert_flag} (optional)\n\n",
+            f"- Metrics: BLEU={compute_bleu_flag}, chrF={compute_chrf_flag}, BERTScore={compute_bert_flag} (optional)\n",
+            f"- BLEU tokenizer (sacrebleu): `{bleu_tokenizer}`\n",
+            f"- Chat formatting: `{model_family}` (Gemma uses `user`/`model` roles with system folded into the first user turn)\n\n",
         ]
 
         base_results = None
@@ -509,7 +550,7 @@ def main():
 
             if base_results and run_baseline and base_results[l].get("refs"):
                 if compute_bleu_flag:
-                    z_bleu = compute_bleu(base_results[l]["refs"], base_results[l]["hyps"])
+                    z_bleu = compute_bleu(base_results[l]["refs"], base_results[l]["hyps"], bleu_tokenizer)
                 if compute_chrf_flag:
                     z_chrf = compute_chrf(base_results[l]["refs"], base_results[l]["hyps"])
                 if compute_bert_flag:
@@ -518,7 +559,7 @@ def main():
                 overall_base_hyps.extend(base_results[l]["hyps"])
             if lora_results and lora_results[l].get("refs"):
                 if compute_bleu_flag:
-                    f_bleu = compute_bleu(lora_results[l]["refs"], lora_results[l]["hyps"])
+                    f_bleu = compute_bleu(lora_results[l]["refs"], lora_results[l]["hyps"], bleu_tokenizer)
                 if compute_chrf_flag:
                     f_chrf = compute_chrf(lora_results[l]["refs"], lora_results[l]["hyps"])
                 if compute_bert_flag:
@@ -564,7 +605,7 @@ def main():
             lines.append("## Overall metrics\n\n")
             if run_baseline and overall_base_refs:
                 if compute_bleu_flag:
-                    overall_metrics["zero_shot"]["bleu"] = compute_bleu(overall_base_refs, overall_base_hyps)
+                    overall_metrics["zero_shot"]["bleu"] = compute_bleu(overall_base_refs, overall_base_hyps, bleu_tokenizer)
                     lines.append(f"- Zero-shot BLEU (pooled): {_fmt_bleu(overall_metrics['zero_shot']['bleu'])}\n")
                 if compute_chrf_flag:
                     overall_metrics["zero_shot"]["chrf"] = compute_chrf(overall_base_refs, overall_base_hyps)
@@ -576,7 +617,7 @@ def main():
                     lines.append(f"- Zero-shot BERTScore F1 (pooled): {_fmt_bleu(overall_metrics['zero_shot']['bertscore_f1'])}\n")
             if overall_lora_refs:
                 if compute_bleu_flag:
-                    overall_metrics["fine_tuned"]["bleu"] = compute_bleu(overall_lora_refs, overall_lora_hyps)
+                    overall_metrics["fine_tuned"]["bleu"] = compute_bleu(overall_lora_refs, overall_lora_hyps, bleu_tokenizer)
                     lines.append(f"- Fine-tuned BLEU (pooled): {_fmt_bleu(overall_metrics['fine_tuned']['bleu'])}\n")
                 if compute_chrf_flag:
                     overall_metrics["fine_tuned"]["chrf"] = compute_chrf(overall_lora_refs, overall_lora_hyps)
@@ -620,6 +661,7 @@ def main():
                         compute_chrf_flag=compute_chrf_flag,
                         compute_bert_flag=compute_bert_flag,
                         bert_lang=l,
+                        bleu_tokenizer=bleu_tokenizer,
                     )
                     f_grp = _group_metrics_by_label(
                         lora_results[l],
@@ -628,6 +670,7 @@ def main():
                         compute_chrf_flag=compute_chrf_flag,
                         compute_bert_flag=compute_bert_flag,
                         bert_lang=l,
+                        bleu_tokenizer=bleu_tokenizer,
                     )
                     grouped[l]["by_emotion"] = {"zero_shot": z_grp, "fine_tuned": f_grp}
                     lines.append(
@@ -641,6 +684,7 @@ def main():
                         compute_chrf_flag=compute_chrf_flag,
                         compute_bert_flag=compute_bert_flag,
                         bert_lang=l,
+                        bleu_tokenizer=bleu_tokenizer,
                     )
                     f_grp = _group_metrics_by_label(
                         lora_results[l],
@@ -649,6 +693,7 @@ def main():
                         compute_chrf_flag=compute_chrf_flag,
                         compute_bert_flag=compute_bert_flag,
                         bert_lang=l,
+                        bleu_tokenizer=bleu_tokenizer,
                     )
                     grouped[l]["by_dialog_act"] = {"zero_shot": z_grp, "fine_tuned": f_grp}
                     lines.append(
@@ -722,6 +767,7 @@ def main():
             "eval_dataset_path": str(test_path),
             "requested_samples_per_lang": n,
             "evaluated_samples_total": int(sum(len(buckets[l]) for l in langs)),
+            "bleu_tokenizer": bleu_tokenizer,
             "generation": gen_meta,
             "prompt_options": prompt_kwargs,
             "langs": langs,

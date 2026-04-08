@@ -1,13 +1,13 @@
-# Evaluation for Qwen2.5-3B QLoRA runs (training_3b_qlora_bn.yaml).
-# Uses 4-bit loading for GPU memory; same Bengali test path as 7B/0.5B evals.
+# Evaluation for Gemma 2 2B IT QLoRA (training_gemma2_2b_it_qlora_bn.yaml).
+# Reuses the same SFT test split; apply_chat_template uses Gemma user/model roles via 07_eval.
 
 model:
-  base_model: Qwen/Qwen2.5-3B-Instruct
+  base_model: google/gemma-2-2b-it
   load_in_4bit: true
   load_in_8bit: false
   torch_dtype: bfloat16
   device_map: auto
-  lora_adapter_dir: model_3b_qlora_bn/lora_adapter
+  lora_adapter_dir: model_gemma2_2b_it_qlora_bn/lora_adapter
 
 data:
   test_path: sft/multilingual_1000/test.jsonl
@@ -37,9 +37,9 @@ evaluation:
     system_template: null
 
 outputs:
-  report_path: eval_report_3b_qlora_bn.md
-  metrics_path: eval_metrics_3b_qlora_bn.json
-  predictions_path: generations_3b_qlora_bn.jsonl
+  report_path: eval_report_gemma2_2b_it_qlora_bn.md
+  metrics_path: eval_metrics_gemma2_2b_it_qlora_bn.json
+  predictions_path: generations_gemma2_2b_it_qlora_bn.jsonl
   include_samples: true
   num_samples_per_lang: 5
   samples_format: blocks

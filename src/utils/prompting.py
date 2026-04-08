@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+MODEL_FAMILY_DEFAULT = "default"
+MODEL_FAMILY_GEMMA = "gemma"
+
 # Default template: concise next-utterance task; {lang} is substituted per record.
 DEFAULT_SYSTEM_TEMPLATE = (
     "Generate only the next assistant utterance in '{lang}'. "
@@ -70,6 +73,62 @@ def build_system_prompt(
     return " ".join(p for p in parts if p).strip()
 
 
+def normalize_messages_for_model(
+    messages: list[dict[str, Any]],
+    model_family: str,
+) -> list[dict[str, str]]:
+    """
+    Adapt chat messages for the tokenizer's expected roles.
+
+    Qwen-style instruct models use ``system`` / ``user`` / ``assistant``. Gemma IT chat
+    templates use ``user`` / ``model`` only; system instructions must be folded into the
+    first user turn. Stored SFT rows stay Qwen-shaped; call this before
+    ``apply_chat_template`` when ``model_family`` is ``\"gemma\"``.
+    """
+    fam = (model_family or MODEL_FAMILY_DEFAULT).strip().lower()
+    if fam != MODEL_FAMILY_GEMMA:
+        return [dict(m) for m in messages if isinstance(m, dict)]
+
+    system_parts: list[str] = []
+    turns: list[tuple[str, str]] = []
+
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = (m.get("role") or "").strip().lower()
+        content = _text_or_empty(m.get("content"))
+        if role == "system":
+            if content:
+                system_parts.append(content)
+            continue
+        if role == "user":
+            turns.append(("user", content))
+        elif role in ("assistant", "model"):
+            turns.append(("assistant", content))
+
+    system_text = "\n\n".join(system_parts).strip()
+
+    if not turns:
+        return []
+
+    i_first_user = next((i for i, (r, _) in enumerate(turns) if r == "user"), None)
+    if i_first_user is None:
+        if system_text:
+            turns.insert(0, ("user", system_text))
+    elif system_text:
+        _r, c = turns[i_first_user]
+        turns[i_first_user] = (
+            "user",
+            f"{system_text}\n\n{c}".strip() if c else system_text,
+        )
+
+    out: list[dict[str, str]] = []
+    for r, c in turns:
+        gemma_role = "model" if r == "assistant" else "user"
+        out.append({"role": gemma_role, "content": c})
+    return out
+
+
 def build_generation_messages(
     history_messages: list[dict[str, Any]],
     lang: str,
@@ -98,6 +157,7 @@ def messages_for_generation_from_record(
     short_reply_hint: bool = False,
     style: str = "default",
     system_template: Optional[str] = None,
+    model_family: str = MODEL_FAMILY_DEFAULT,
 ) -> list[dict[str, str]]:
     """
     Rebuild generation-time messages from a JSONL record using the same system prompt logic as SFT.
@@ -130,4 +190,5 @@ def messages_for_generation_from_record(
         if not content or role not in ("user", "assistant"):
             continue
         body.append({"role": role, "content": content})
-    return build_generation_messages(body, lang, system)
+    qwen_style = build_generation_messages(body, lang, system)
+    return normalize_messages_for_model(qwen_style, model_family)

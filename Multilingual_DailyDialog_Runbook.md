@@ -49,8 +49,12 @@ mkdir -p $DATA_DIR $OUTPUTS_DIR $REPORTS_DIR
 ## 6. Install Dependencies
 ```bash
 pip install -r requirements.txt
-pip install bitsandbytes accelerate peft trl sacrebleu langdetect
+pip install bitsandbytes accelerate peft trl sacrebleu langdetect sentencepiece bert-score
 ```
+
+`sentencepiece` is required for sacrebleu’s `flores200` BLEU tokenizer (default in `src/07_eval.py` for Bangla-friendly evaluation). **`bert-score`** is used when `evaluation.compute_bertscore: true` (7B/3B/Gemma eval YAMLs); if the import fails, BERTScore is skipped (`None`) and BLEU/chrF still run. **BLEU** stays for strict overlap; **chrF** helps with Bangla morphology; **BERTScore** is less punishing than BLEU on paraphrased dialogue.
+
+**Gemma vs Qwen formatting:** the same `data/sft/multilingual_1000/*.jsonl` files are reused for Gemma. Gemma 2 IT chat templates expect **`user` / `model`** only (no `system` role), so `src/06_train_sft.py` and `src/07_eval.py` normalize roles at formatting time—Qwen paths are unchanged.
 
 ---
 
@@ -129,6 +133,8 @@ python src/07_eval.py \
   --config configs/eval_7b_qlora_bn.yaml
 ```
 
+**BLEU note:** `src/07_eval.py` reports BLEU with sacrebleu `tokenize=flores200` by default (`evaluation.bleu_tokenizer: flores200` in the 7B/3B eval YAMLs). This improves Bangla evaluation robustness versus the library default; chrF is unchanged. The chosen tokenizer is logged at startup and written to `eval_metrics_*.json` as `bleu_tokenizer`.
+
 ---
 
 ## 13. Evaluate 3B
@@ -149,11 +155,55 @@ Exact expected report paths:
 - `$REPORTS_DIR/eval_metrics_3b_qlora_bn.json`
 - `$REPORTS_DIR/generations_3b_qlora_bn.jsonl`
 
-Metrics note: run locally to populate metrics for the new 3B path.
+Metrics note: run locally to populate metrics for the new 3B path. **BERTScore** is enabled in `eval_7b_qlora_bn.yaml` and `eval_3b_qlora_bn.yaml` alongside BLEU (`flores200`) and chrF.
 
 ---
 
-## 14. Check Outputs
+## 14. Train & evaluate Gemma 2 2B IT QLoRA (optional)
+
+Uses **`google/gemma-2-2b-it`** with the same SFT JSONL as Qwen; outputs are separate (`model_gemma2_2b_it_qlora_bn`, `eval_report_gemma2_2b_it_qlora_bn.md`, etc.).
+
+**Preflight — chat template:**
+
+```python
+from transformers import AutoTokenizer
+tok = AutoTokenizer.from_pretrained("google/gemma-2-2b-it", use_fast=True)
+print(bool(getattr(tok, "chat_template", None)))
+print((tok.chat_template or "")[:400])
+```
+
+**Preflight — LoRA target modules:**
+
+```python
+from transformers import AutoModelForCausalLM
+model = AutoModelForCausalLM.from_pretrained("google/gemma-2-2b-it")
+wanted = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+found = {name.split(".")[-1] for name, _ in model.named_modules()}
+print("missing:", sorted(wanted - found))
+```
+
+**Train:**
+
+```bash
+python src/06_train_sft.py --config configs/training_gemma2_2b_it_qlora_bn.yaml
+```
+
+**Evaluate:**
+
+```bash
+python src/07_eval.py --config configs/eval_gemma2_2b_it_qlora_bn.yaml
+```
+
+Expected artifacts (under your `OUTPUTS_DIR` / `REPORTS_DIR`):
+
+- `$OUTPUTS_DIR/model_gemma2_2b_it_qlora_bn/lora_adapter`
+- `$REPORTS_DIR/eval_report_gemma2_2b_it_qlora_bn.md`
+- `$REPORTS_DIR/eval_metrics_gemma2_2b_it_qlora_bn.json`
+- `$REPORTS_DIR/generations_gemma2_2b_it_qlora_bn.jsonl`
+
+---
+
+## 15. Check Outputs
 ```bash
 ls -R $OUTPUTS_DIR
 ls -R $REPORTS_DIR
@@ -161,23 +211,31 @@ ls -R $REPORTS_DIR
 
 ---
 
-## 15. Check Metrics
+## 16. Check Metrics
 ```bash
 cat $REPORTS_DIR/eval_metrics_final.json
 cat $REPORTS_DIR/eval_metrics_3b_qlora_bn.json
 cat $REPORTS_DIR/eval_metrics_7b_qlora_bn.json
+cat $REPORTS_DIR/eval_metrics_gemma2_2b_it_qlora_bn.json
+```
+
+**Rerun 7B / 3B evaluation only** (same as README):
+
+```bash
+python src/07_eval.py --config configs/eval_7b_qlora_bn.yaml
+python src/07_eval.py --config configs/eval_3b_qlora_bn.yaml
 ```
 
 ---
 
-## 16. GPU Memory Fix (if needed)
+## 17. GPU Memory Fix (if needed)
 ```bash
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 ```
 
 ---
 
-## 17. Always Start Session With
+## 18. Always Start Session With
 ```bash
 cd /content/drive/MyDrive/Multilingual_DailyDialog/Multilingual_DailyDialog
 git pull
@@ -193,5 +251,6 @@ git pull
 5. Evaluate 3B  
 6. Train 7B  
 7. Evaluate 7B  
-8. Compare results locally after metrics are generated  
+8. *(Optional)* Train Gemma 2 2B IT → Evaluate Gemma  
+9. Compare results locally after metrics are generated  
 

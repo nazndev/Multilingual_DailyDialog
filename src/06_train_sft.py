@@ -17,6 +17,7 @@ from trl import SFTConfig, SFTTrainer
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.utils.env import get_dirs, get_env, resolve_path
 from src.utils.logging_utils import setup_logger, banner, log_config_safely, log_env_safely, timer
+from src.utils.prompting import normalize_messages_for_model
 
 
 def load_cfg(path: str) -> dict:
@@ -85,7 +86,11 @@ def save_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def _format_messages_record_to_text(example: Mapping, tok) -> dict:
+def _is_gemma_model(model_id: str) -> bool:
+    return "gemma" in (model_id or "").lower()
+
+
+def _format_messages_record_to_text(example: Mapping, tok, *, use_gemma_chat: bool = False) -> dict:
     """
     Build a single training string from one JSONL record, matching eval-time chat formatting.
 
@@ -119,6 +124,8 @@ def _format_messages_record_to_text(example: Mapping, tok) -> dict:
         if not isinstance(content, str):
             raise ValueError(f"messages[{idx}] 'content' must be a string.")
         normalized_messages.append(md)
+    if use_gemma_chat:
+        normalized_messages = normalize_messages_for_model(normalized_messages, "gemma")
     formatted = tok.apply_chat_template(normalized_messages, tokenize=False)
     if not isinstance(formatted, str) or not formatted.strip():
         raise ValueError("Chat template formatting produced empty text.")
@@ -182,6 +189,10 @@ def main():
             if tok.pad_token is None:
                 tok.pad_token = tok.eos_token
 
+        use_gemma_chat = _is_gemma_model(base)
+        if use_gemma_chat:
+            logger.info("chat_format=gemma (system folded into first user; assistant->model)")
+
         with timer(logger, "format_sft_datasets"):
             def _fmt(ex):
                 # Accept HuggingFace row types (mapping-like)
@@ -195,7 +206,7 @@ def main():
                     return {"text": ""}
 
                 try:
-                    return _format_messages_record_to_text(ex, tok)
+                    return _format_messages_record_to_text(ex, tok, use_gemma_chat=use_gemma_chat)
                 except Exception:
                     return {"text": ""}
 

@@ -14,9 +14,10 @@ data:
 
 evaluation:
   run_baseline: true
+  bleu_tokenizer: flores200
   compute_bleu: true
   compute_chrf: true
-  compute_bertscore: false
+  compute_bertscore: true
   num_samples_per_lang: 200
   langs: [bn]
   max_new_tokens: 96
