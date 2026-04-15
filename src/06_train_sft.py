@@ -482,14 +482,17 @@ def main():
                 train_args_kwargs["eval_strategy"] = eval_strategy
         train_args = TrainingArguments(**train_args_kwargs)
         collator = ResponseOnlyCollator(pad_token_id=tok.pad_token_id)
-        trainer = Trainer(
-            model=model,
-            args=train_args,
-            train_dataset=ds_train,
-            eval_dataset=ds_eval,
-            data_collator=collator,
-            tokenizer=tok,
-        )
+        trainer_params = inspect.signature(Trainer.__init__).parameters
+        trainer_kwargs: dict[str, Any] = {
+            "model": model,
+            "args": train_args,
+            "train_dataset": ds_train,
+            "eval_dataset": ds_eval,
+            "data_collator": collator,
+        }
+        if "tokenizer" in trainer_params:
+            trainer_kwargs["tokenizer"] = tok
+        trainer = Trainer(**trainer_kwargs)
         meta_path = output_dir / "train_run_metadata.json"
         run_meta = {
             "project_task": "multilingual next-utterance generation",
