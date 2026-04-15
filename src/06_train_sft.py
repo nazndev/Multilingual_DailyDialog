@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import json
 import sys
 import traceback
@@ -448,27 +449,38 @@ def main():
                 "train_sample_count=%s is small and likely for demo/smoke-test validation.",
                 train_sample_count,
             )
-        train_args = TrainingArguments(
-            output_dir=str(output_dir),
-            per_device_train_batch_size=per_device_bs,
-            per_device_eval_batch_size=per_device_eval_bs,
-            gradient_accumulation_steps=grad_accum,
-            num_train_epochs=num_epochs,
-            max_steps=max_steps,
-            learning_rate=learning_rate,
-            warmup_ratio=float(tr_cfg.get("warmup_ratio", 0.03)),
-            logging_steps=logging_steps,
-            save_steps=save_steps,
-            save_strategy=save_strategy,
-            evaluation_strategy=eval_strategy,
-            eval_steps=eval_steps,
-            report_to=[],
-            bf16=bf16,
-            fp16=fp16,
-            seed=seed,
-            gradient_checkpointing=gradient_checkpointing,
-            remove_unused_columns=False,
-        )
+        ta_params = inspect.signature(TrainingArguments.__init__).parameters
+        train_args_kwargs: dict[str, Any] = {
+            "output_dir": str(output_dir),
+            "per_device_train_batch_size": per_device_bs,
+            "per_device_eval_batch_size": per_device_eval_bs,
+            "gradient_accumulation_steps": grad_accum,
+            "num_train_epochs": num_epochs,
+            "max_steps": max_steps,
+            "learning_rate": learning_rate,
+            "warmup_ratio": float(tr_cfg.get("warmup_ratio", 0.03)),
+            "logging_steps": logging_steps,
+            "save_steps": save_steps,
+            "save_strategy": save_strategy,
+            "report_to": [],
+            "bf16": bf16,
+            "fp16": fp16,
+            "seed": seed,
+            "gradient_checkpointing": gradient_checkpointing,
+            "remove_unused_columns": False,
+        }
+        if eval_strategy == "steps":
+            if "evaluation_strategy" in ta_params:
+                train_args_kwargs["evaluation_strategy"] = eval_strategy
+            elif "eval_strategy" in ta_params:
+                train_args_kwargs["eval_strategy"] = eval_strategy
+            train_args_kwargs["eval_steps"] = eval_steps
+        else:
+            if "evaluation_strategy" in ta_params:
+                train_args_kwargs["evaluation_strategy"] = eval_strategy
+            elif "eval_strategy" in ta_params:
+                train_args_kwargs["eval_strategy"] = eval_strategy
+        train_args = TrainingArguments(**train_args_kwargs)
         collator = ResponseOnlyCollator(pad_token_id=tok.pad_token_id)
         trainer = Trainer(
             model=model,
@@ -505,7 +517,13 @@ def main():
             "save_steps": save_steps,
             "eval_steps": eval_steps,
             "save_strategy": _to_jsonable(train_args.save_strategy),
-            "eval_strategy": _to_jsonable(train_args.eval_strategy),
+            "eval_strategy": _to_jsonable(
+                getattr(
+                    train_args,
+                    "evaluation_strategy",
+                    getattr(train_args, "eval_strategy", None),
+                )
+            ),
             "bf16": bool(bf16),
             "fp16": bool(fp16),
             "dtype": torch_dtype_used,
