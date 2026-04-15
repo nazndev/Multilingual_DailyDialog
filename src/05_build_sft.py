@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.utils.env import get_dirs, get_langs, resolve_path
 from src.utils.logging_utils import setup_logger, banner, log_config_safely, log_env_safely, timer, summarize_jsonl
-from src.utils.prompting import build_system_prompt
+from src.utils.prompting import build_system_prompt, to_gemma_messages
 
 # -----------------------------------------------------------------------------
 # DailyDialog label conventions (utterance-level emotion / act IDs).
@@ -336,6 +336,42 @@ def _collect_examples_for_dialogue(
     return out, skip_stats
 
 
+def _messages_have_only_roles(messages: list[dict], allowed: set[str]) -> bool:
+    return all(isinstance(m, dict) and (m.get("role") in allowed) for m in messages)
+
+
+def _build_export_variants(example: dict) -> tuple[dict, dict]:
+    """Return (qwen_record, gemma_record) for model-specific SFT exports."""
+    qwen_messages = [dict(m) for m in (example.get("messages") or []) if isinstance(m, dict)]
+    qwen = {
+        "dialogue_id": example.get("dialogue_id"),
+        "turn_index": example.get("turn_index"),
+        "lang": example.get("lang"),
+        "messages": qwen_messages,
+        "target_role": "assistant",
+        "target_text": (qwen_messages[-1].get("content") or "").strip() if qwen_messages else "",
+    }
+    if "emotion_at_turn" in example:
+        qwen["emotion_at_turn"] = example["emotion_at_turn"]
+    if "act_at_turn" in example:
+        qwen["act_at_turn"] = example["act_at_turn"]
+
+    gemma_messages = to_gemma_messages(qwen_messages)
+    gemma = {
+        "dialogue_id": example.get("dialogue_id"),
+        "turn_index": example.get("turn_index"),
+        "lang": example.get("lang"),
+        "messages": gemma_messages,
+        "target_role": "model",
+        "target_text": (gemma_messages[-1].get("content") or "").strip() if gemma_messages else "",
+    }
+    if "emotion_at_turn" in example:
+        gemma["emotion_at_turn"] = example["emotion_at_turn"]
+    if "act_at_turn" in example:
+        gemma["act_at_turn"] = example["act_at_turn"]
+    return qwen, gemma
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/translation_1000_api_bn.yaml", help="Translation config (for out_dir)")
@@ -356,12 +392,16 @@ def main():
         context_window = sft_cfg["context_window"] if sft_cfg["context_window"] >= 0 else sft_cfg["use_context_window"]
         in_dir = resolve_path(cfg.get("out_dir", "translated_dailydialog_en_bn_ar_es"), dirs["data"])
         sft_dir = resolve_path(cfg.get("sft_dir", "sft/multilingual"), dirs["data"])
-        sft_dir.mkdir(parents=True, exist_ok=True)
+        qwen_dir = sft_dir.parent / "qwen_bn"
+        gemma_dir = sft_dir.parent / "gemma_bn"
+        qwen_dir.mkdir(parents=True, exist_ok=True)
+        gemma_dir.mkdir(parents=True, exist_ok=True)
         logger.info(
-            "input_dir=%s output_dir=%s context_window=%s enforce_user_first_history=%s "
+            "input_dir=%s qwen_output_dir=%s gemma_output_dir=%s context_window=%s enforce_user_first_history=%s "
             "prompt_style=%s short_reply_hint=%s use_emotion_tag=%s use_dialog_act_tag=%s",
             in_dir,
-            sft_dir,
+            qwen_dir,
+            gemma_dir,
             context_window,
             sft_cfg["enforce_user_first_history"],
             sft_cfg["prompt_style"],
@@ -378,7 +418,10 @@ def main():
             "script": "05_build_sft.py",
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "input_dir": str(in_dir),
-            "output_dir": str(sft_dir),
+            "output_dirs": {
+                "qwen": str(qwen_dir),
+                "gemma": str(gemma_dir),
+            },
             "langs": langs,
             "config": sft_cfg,
             "context_window_effective": context_window,
@@ -387,6 +430,7 @@ def main():
             "use_emotion_tag": sft_cfg["use_emotion_tag"],
             "use_dialog_act_tag": sft_cfg["use_dialog_act_tag"],
             "output_examples_per_split": {},
+            "output_examples_per_split_by_model": {"qwen": {}, "gemma": {}},
             "skipped_dialogues": 0,
             "skipped_turns": 0,
             "skipped_target_empty": 0,
@@ -396,6 +440,12 @@ def main():
             "average_turns_per_dialogue": 0.0,
             "average_examples_per_dialogue": 0.0,
             "splits": {},
+            "validation": {
+                "qwen_roles_only": True,
+                "gemma_roles_only": True,
+                "gemma_has_no_system": True,
+                "target_span_present_non_empty": True,
+            },
         }
         total_input_dialogues = 0
         total_skipped_dialogues = 0
@@ -410,8 +460,11 @@ def main():
                 continue
             logger.info("input path=%s", inp)
             summarize_jsonl(logger, inp)
-            outp = sft_dir / f"{split}.{'jsonl' if sft_cfg['output_format'] == 'jsonl' else 'json'}"
+            qwen_outp = qwen_dir / f"{split}.jsonl"
+            gemma_outp = gemma_dir / f"{split}.jsonl"
             written = 0
+            written_qwen = 0
+            written_gemma = 0
             processed_dialogues = 0
             skipped_dialogues = 0
             skipped_malformed = 0
@@ -422,13 +475,18 @@ def main():
             skipped_context_hole = 0
             skipped_history_starts_with_assistant = 0
             context_turn_sum = 0
-            examples_buffer = []
+            bad_qwen_roles = 0
+            bad_gemma_roles = 0
+            gemma_system_found = 0
+            missing_target = 0
             stop_early = False
             examples_per_dialogue: list[int] = []
             turns_per_dialogue: list[int] = []
 
             with timer(logger, f"build_sft_{split}"):
-                with open(inp, "r", encoding="utf-8") as r, open(outp, "w", encoding="utf-8") as w:
+                with open(inp, "r", encoding="utf-8") as r, \
+                    open(qwen_outp, "w", encoding="utf-8") as w_qwen, \
+                    open(gemma_outp, "w", encoding="utf-8") as w_gemma:
                     for line in r:
                         if not line.strip():
                             continue
@@ -491,11 +549,27 @@ def main():
                             skipped_history_starts_with_assistant += sk["skipped_history_starts_with_assistant"]
                             ex_count = 0
                             for ex in ex_list:
-                                if sft_cfg["output_format"] == "jsonl":
-                                    w.write(json.dumps(ex, ensure_ascii=False) + "\n")
-                                else:
-                                    examples_buffer.append(ex)
+                                qwen_ex, gemma_ex = _build_export_variants(ex)
+                                qwen_roles_ok = _messages_have_only_roles(
+                                    qwen_ex["messages"], {"system", "user", "assistant"}
+                                )
+                                gemma_roles_ok = _messages_have_only_roles(
+                                    gemma_ex["messages"], {"user", "model"}
+                                )
+                                if not qwen_roles_ok:
+                                    bad_qwen_roles += 1
+                                if not gemma_roles_ok:
+                                    bad_gemma_roles += 1
+                                if any((m.get("role") == "system") for m in gemma_ex["messages"]):
+                                    gemma_system_found += 1
+                                if not qwen_ex.get("target_text") or not gemma_ex.get("target_text"):
+                                    missing_target += 1
+
+                                w_qwen.write(json.dumps(qwen_ex, ensure_ascii=False) + "\n")
+                                w_gemma.write(json.dumps(gemma_ex, ensure_ascii=False) + "\n")
                                 written += 1
+                                written_qwen += 1
+                                written_gemma += 1
                                 ex_count += 1
                                 context_turn_sum += int(ex.get("context_turns", 0))
                                 if sft_cfg["max_samples"] > 0 and written >= sft_cfg["max_samples"]:
@@ -511,8 +585,6 @@ def main():
                             skipped_dialogues += 1
                         if stop_early:
                             break
-                    if sft_cfg["output_format"] == "json":
-                        w.write(json.dumps(examples_buffer, ensure_ascii=False, indent=2))
             avg_context_turns = round(context_turn_sum / written, 2) if written > 0 else 0.0
             avg_turns_per_d = round(sum(turns_per_dialogue) / len(turns_per_dialogue), 2) if turns_per_dialogue else 0.0
             avg_ex_per_d = round(sum(examples_per_dialogue) / len(examples_per_dialogue), 2) if examples_per_dialogue else 0.0
@@ -529,7 +601,7 @@ def main():
                 "skipped_turns=%s (target_empty=%s empty_history=%s context_hole=%s "
                 "history_starts_with_assistant=%s) avg_context_turns=%s",
                 split,
-                outp,
+                qwen_outp,
                 written,
                 processed_dialogues,
                 skipped_dialogues,
@@ -545,9 +617,14 @@ def main():
             )
             run_summary["splits"][split] = {
                 "input_path": str(inp),
-                "output_path": str(outp),
+                "output_paths": {
+                    "qwen": str(qwen_outp),
+                    "gemma": str(gemma_outp),
+                },
                 "input_dialogues": processed_dialogues,
                 "output_examples": written,
+                "output_examples_qwen": written_qwen,
+                "output_examples_gemma": written_gemma,
                 "skipped_dialogues": skipped_dialogues,
                 "skipped_malformed": skipped_malformed,
                 "skipped_empty": skipped_empty_turns,
@@ -567,12 +644,32 @@ def main():
                 "use_dialog_act_tag": sft_cfg["use_dialog_act_tag"],
                 "generated_samples": written,
                 "skipped_empty_or_invalid_turns": skipped_empty_turns,
+                "validation": {
+                    "bad_qwen_roles": bad_qwen_roles,
+                    "bad_gemma_roles": bad_gemma_roles,
+                    "gemma_system_found": gemma_system_found,
+                    "missing_target": missing_target,
+                },
             }
             run_summary["output_examples_per_split"][split] = written
+            run_summary["output_examples_per_split_by_model"]["qwen"][split] = written_qwen
+            run_summary["output_examples_per_split_by_model"]["gemma"][split] = written_gemma
+            run_summary["validation"]["qwen_roles_only"] = run_summary["validation"]["qwen_roles_only"] and (
+                bad_qwen_roles == 0
+            )
+            run_summary["validation"]["gemma_roles_only"] = run_summary["validation"]["gemma_roles_only"] and (
+                bad_gemma_roles == 0
+            )
+            run_summary["validation"]["gemma_has_no_system"] = run_summary["validation"]["gemma_has_no_system"] and (
+                gemma_system_found == 0
+            )
+            run_summary["validation"]["target_span_present_non_empty"] = run_summary["validation"][
+                "target_span_present_non_empty"
+            ] and (missing_target == 0)
             if sft_cfg["max_samples"] > 0 and written >= sft_cfg["max_samples"]:
                 logger.warning("Reached sft.max_samples=%s for split=%s", sft_cfg["max_samples"], split)
-            if sft_cfg["output_format"] == "jsonl":
-                summarize_jsonl(logger, outp)
+            summarize_jsonl(logger, qwen_outp)
+            summarize_jsonl(logger, gemma_outp)
 
             total_input_dialogues += processed_dialogues
             total_skipped_dialogues += skipped_dialogues
@@ -598,7 +695,7 @@ def main():
         if dialogues_with_examples > 0:
             run_summary["average_examples_per_dialogue"] = round(tw / dialogues_with_examples, 4)
 
-        summary_path = sft_dir / "build_sft_summary.json"
+        summary_path = sft_dir.parent / "build_sft_summary.json"
         summary_path.write_text(json.dumps(run_summary, indent=2, ensure_ascii=False), encoding="utf-8")
         logger.info("sft_summary_path=%s", summary_path)
         banner(logger, "Step 05: Done", char="-")

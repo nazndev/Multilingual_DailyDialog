@@ -1,5 +1,4 @@
 import argparse
-import inspect
 import json
 import sys
 import traceback
@@ -12,7 +11,7 @@ import torch
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from trl import SFTConfig, SFTTrainer
+from transformers import Trainer, TrainingArguments
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.utils.env import get_dirs, get_env, resolve_path
@@ -86,50 +85,38 @@ def save_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def _is_gemma_model(model_id: str) -> bool:
-    return "gemma" in (model_id or "").lower()
+def _detect_model_family(model_id: str) -> str:
+    lowered = (model_id or "").lower()
+    if "qwen" in lowered:
+        return "qwen"
+    if "gemma" in lowered:
+        return "gemma"
+    raise ValueError(f"Unsupported model family for base_model={model_id!r}; expected qwen or gemma.")
 
 
-def _format_messages_record_to_text(example: Mapping, tok, *, use_gemma_chat: bool = False) -> dict:
-    """
-    Build a single training string from one JSONL record, matching eval-time chat formatting.
+def _pad_batch(batch: list[list[int]], pad_value: int) -> list[list[int]]:
+    max_len = max(len(x) for x in batch) if batch else 0
+    return [x + [pad_value] * (max_len - len(x)) for x in batch]
 
-    Preference order:
-      1) non-empty ``text`` field (already formatted)
-      2) ``messages`` rendered with ``tokenizer.apply_chat_template(..., tokenize=False)``
-         (full transcript, including the final assistant target — no stripping)
-    """
-    if not isinstance(example, Mapping):
-        raise ValueError(
-            "Each dataset record must be a mapping-like object with 'messages' or 'text'."
-        )
-    example = dict(example)
-    text_existing = example.get("text")
-    if isinstance(text_existing, str) and text_existing.strip():
-        return {"text": text_existing.strip()}
-    messages = example.get("messages")
-    if not isinstance(messages, list) or len(messages) == 0:
-        raise ValueError(
-            "Each training record must contain a non-empty 'messages' list or a non-empty 'text' string."
-        )
-    normalized_messages: list[dict] = []
-    for idx, m in enumerate(messages):
-        if not isinstance(m, Mapping):
-            raise ValueError(f"messages[{idx}] must be a mapping with 'role' and 'content'.")
-        md = dict(m)
-        role = md.get("role")
-        content = md.get("content")
-        if not isinstance(role, str) or not role.strip():
-            raise ValueError(f"messages[{idx}] has invalid or missing 'role' (non-empty string required).")
-        if not isinstance(content, str):
-            raise ValueError(f"messages[{idx}] 'content' must be a string.")
-        normalized_messages.append(md)
-    if use_gemma_chat:
-        normalized_messages = normalize_messages_for_model(normalized_messages, "gemma")
-    formatted = tok.apply_chat_template(normalized_messages, tokenize=False)
-    if not isinstance(formatted, str) or not formatted.strip():
-        raise ValueError("Chat template formatting produced empty text.")
-    return {"text": formatted}
+
+class ResponseOnlyCollator:
+    def __init__(self, pad_token_id: int):
+        self.pad_token_id = pad_token_id
+
+    def __call__(self, features: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
+        input_ids = _pad_batch([list(f["input_ids"]) for f in features], self.pad_token_id)
+        attention_mask = _pad_batch([list(f["attention_mask"]) for f in features], 0)
+        labels = _pad_batch([list(f["labels"]) for f in features], -100)
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long),
+        }
+
+
+def _to_token_ids(tok, text: str) -> list[int]:
+    enc = tok(text, add_special_tokens=False, return_attention_mask=False)
+    return list(enc["input_ids"])
 
 
 def main():
@@ -189,26 +176,100 @@ def main():
             if tok.pad_token is None:
                 tok.pad_token = tok.eos_token
 
-        use_gemma_chat = _is_gemma_model(base)
-        if use_gemma_chat:
-            logger.info("chat_format=gemma (system folded into first user; assistant->model)")
+        model_family = _detect_model_family(base)
+        logger.info("model_family=%s", model_family)
 
+        max_length = int(cfg["training"].get("max_seq_len", cfg["training"].get("max_seq_length", 2048)))
+        debug_state = {"printed": False}
         with timer(logger, "format_sft_datasets"):
             def _fmt(ex):
-                # Accept HuggingFace row types (mapping-like)
                 if not isinstance(ex, Mapping):
-                    return {"text": ""}
-
-                ex = dict(ex)
-
-                msgs = ex.get("messages")
-                if not isinstance(msgs, list) or len(msgs) == 0:
-                    return {"text": ""}
-
+                    return {"ok": False}
+                row = dict(ex)
+                raw_messages = row.get("messages")
+                if not isinstance(raw_messages, list) or not raw_messages:
+                    return {"ok": False}
                 try:
-                    return _format_messages_record_to_text(ex, tok, use_gemma_chat=use_gemma_chat)
+                    messages = [dict(m) for m in raw_messages if isinstance(m, Mapping)]
+                    if model_family == "gemma":
+                        messages = normalize_messages_for_model(messages, "gemma")
+                        allowed_roles = {"user", "model"}
+                        target_role = "model"
+                        if any((m.get("role") == "system") for m in messages):
+                            raise ValueError("Gemma sample contains system role after normalization.")
+                    else:
+                        allowed_roles = {"system", "user", "assistant"}
+                        target_role = "assistant"
+
+                    if len(messages) < 2:
+                        raise ValueError("Need at least one prompt message and one target message.")
+                    for i, m in enumerate(messages):
+                        role = m.get("role")
+                        content = m.get("content")
+                        if role not in allowed_roles:
+                            raise ValueError(f"Invalid role={role!r} at messages[{i}] for family={model_family}.")
+                        if not isinstance(content, str):
+                            raise ValueError(f"messages[{i}].content must be string.")
+                    final_msg = messages[-1]
+                    if final_msg.get("role") != target_role:
+                        raise ValueError(
+                            f"Final message role must be {target_role!r}, got {final_msg.get('role')!r}."
+                        )
+                    target_text = (final_msg.get("content") or "").strip()
+                    if not target_text:
+                        raise ValueError("Final target span is empty.")
+
+                    prompt_messages = messages[:-1]
+                    prefix_text = tok.apply_chat_template(
+                        prompt_messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                    full_text = tok.apply_chat_template(messages, tokenize=False)
+                    prefix_ids = _to_token_ids(tok, prefix_text)
+                    full_ids = _to_token_ids(tok, full_text)
+                    target_start = len(prefix_ids)
+                    if target_start >= len(full_ids):
+                        raise ValueError("Target start index is outside formatted sequence.")
+                    labels = [-100] * target_start + full_ids[target_start:]
+                    attention_mask = [1] * len(full_ids)
+
+                    if len(full_ids) > max_length:
+                        cut = len(full_ids) - max_length
+                        full_ids = full_ids[cut:]
+                        attention_mask = attention_mask[cut:]
+                        labels = labels[cut:]
+                        target_start = max(0, target_start - cut)
+
+                    supervised_tokens = sum(1 for t in labels if t != -100)
+                    masked_tokens = len(labels) - supervised_tokens
+                    if supervised_tokens <= 0:
+                        raise ValueError("Label mask has no supervised target tokens.")
+
+                    if not debug_state["printed"]:
+                        preview = full_text if len(full_text) <= 300 else (full_text[:300] + "...")
+                        logger.info("debug_preview_text=%s", preview.replace("\n", "\\n"))
+                        logger.info(
+                            "debug_lengths total_tokens=%s target_start=%s supervised_tokens=%s masked_tokens=%s",
+                            len(full_ids),
+                            target_start,
+                            supervised_tokens,
+                            masked_tokens,
+                        )
+                        debug_state["printed"] = True
+
+                    return {
+                        "ok": True,
+                        "text": full_text,
+                        "input_ids": full_ids,
+                        "attention_mask": attention_mask,
+                        "labels": labels,
+                        "target_start": target_start,
+                        "supervised_tokens": supervised_tokens,
+                        "masked_tokens": masked_tokens,
+                    }
                 except Exception:
-                    return {"text": ""}
+                    return {"ok": False}
 
             train_cols = list(ds_train.column_names)
             ds_train = ds_train.map(_fmt, remove_columns=train_cols, batched=False)
@@ -216,18 +277,12 @@ def main():
                 eval_cols = list(ds_eval.column_names)
                 ds_eval = ds_eval.map(_fmt, remove_columns=eval_cols, batched=False)
 
-            logger.info("dataset_map_mode=single_example (batched=False)")
-
-            # Remove empty rows after formatting
-            ds_train = ds_train.filter(
-                lambda x: isinstance(x.get("text"), str) and len(x["text"].strip()) > 0,
-                batched=False,
-            )
+            ds_train = ds_train.filter(lambda x: bool(x.get("ok")), batched=False)
             if ds_eval is not None:
-                ds_eval = ds_eval.filter(
-                    lambda x: isinstance(x.get("text"), str) and len(x["text"].strip()) > 0,
-                    batched=False,
-                )
+                ds_eval = ds_eval.filter(lambda x: bool(x.get("ok")), batched=False)
+            ds_train = ds_train.remove_columns(["ok"])
+            if ds_eval is not None:
+                ds_eval = ds_eval.remove_columns(["ok"])
 
             train_sample_count = len(ds_train)
             eval_sample_count = len(ds_eval) if ds_eval else 0
@@ -236,17 +291,20 @@ def main():
                 train_sample_count,
                 eval_sample_count,
             )
-
-            logger.info("formatted_train_dataset_text_field=text")
+            if train_sample_count == 0:
+                raise ValueError("No valid training samples after role and target-span validation.")
+            train_supervised = sum(int(x.get("supervised_tokens", 0)) for x in ds_train)
+            train_masked = sum(int(x.get("masked_tokens", 0)) for x in ds_train)
             logger.info(
-                "formatted_eval_dataset_text_field=%s",
-                "text" if ds_eval is not None else "none",
+                "label_mask_validation train_supervised_tokens=%s train_masked_tokens=%s",
+                train_supervised,
+                train_masked,
             )
-            if len(ds_train) > 0:
-                preview = ds_train[0]["text"]
-                if len(preview) > 300:
-                    preview = preview[:300] + "..."
-                logger.info("formatted_train_preview=%s", preview.replace("\n", "\\n"))
+            if train_supervised <= 0:
+                raise ValueError("Label mask validation failed: supervised token count is zero.")
+
+            logger.info("formatted_train_dataset_fields=%s", ds_train.column_names)
+            logger.info("formatted_eval_dataset_fields=%s", ds_eval.column_names if ds_eval is not None else "none")
 
         with timer(logger, "load_model_and_tokenizer"):
             device, device_name = _pick_device()
@@ -390,50 +448,36 @@ def main():
                 "train_sample_count=%s is small and likely for demo/smoke-test validation.",
                 train_sample_count,
             )
-        _sft_cfg_params = inspect.signature(SFTConfig.__init__).parameters
-        _sft_trainer_params = inspect.signature(SFTTrainer.__init__).parameters
-        sft_kw: dict[str, Any] = {
-            "output_dir": str(output_dir),
-            "per_device_train_batch_size": per_device_bs,
-            "per_device_eval_batch_size": per_device_eval_bs,
-            "gradient_accumulation_steps": grad_accum,
-            "num_train_epochs": num_epochs,
-            "max_steps": max_steps,
-            "learning_rate": learning_rate,
-            "warmup_ratio": float(tr_cfg.get("warmup_ratio", 0.03)),
-            "logging_steps": logging_steps,
-            "save_steps": save_steps,
-            "save_strategy": save_strategy,
-            "eval_strategy": eval_strategy,
-            "eval_steps": eval_steps,
-            "report_to": [],
-            "bf16": bf16,
-            "fp16": fp16,
-            "seed": seed,
-            "max_length": max_length,
-            "packing": False,
-            "gradient_checkpointing": gradient_checkpointing,
-        }
-        if "dataset_text_field" in _sft_cfg_params:
-            sft_kw["dataset_text_field"] = "text"
-        args_tr = SFTConfig(**sft_kw)
-        trainer_kw: dict[str, Any] = {
-            "model": model,
-            "processing_class": tok,
-            "train_dataset": ds_train,
-            "eval_dataset": ds_eval,
-            "args": args_tr,
-        }
-        if "dataset_text_field" not in _sft_cfg_params and "dataset_text_field" in _sft_trainer_params:
-            trainer_kw["dataset_text_field"] = "text"
-        if (
-            "dataset_text_field" not in _sft_cfg_params
-            and "dataset_text_field" not in _sft_trainer_params
-        ):
-            logger.warning(
-                "TRL has no dataset_text_field on SFTConfig/SFTTrainer; ensure training uses the 'text' column."
-            )
-        trainer = SFTTrainer(**trainer_kw)
+        train_args = TrainingArguments(
+            output_dir=str(output_dir),
+            per_device_train_batch_size=per_device_bs,
+            per_device_eval_batch_size=per_device_eval_bs,
+            gradient_accumulation_steps=grad_accum,
+            num_train_epochs=num_epochs,
+            max_steps=max_steps,
+            learning_rate=learning_rate,
+            warmup_ratio=float(tr_cfg.get("warmup_ratio", 0.03)),
+            logging_steps=logging_steps,
+            save_steps=save_steps,
+            save_strategy=save_strategy,
+            evaluation_strategy=eval_strategy,
+            eval_steps=eval_steps,
+            report_to=[],
+            bf16=bf16,
+            fp16=fp16,
+            seed=seed,
+            gradient_checkpointing=gradient_checkpointing,
+            remove_unused_columns=False,
+        )
+        collator = ResponseOnlyCollator(pad_token_id=tok.pad_token_id)
+        trainer = Trainer(
+            model=model,
+            args=train_args,
+            train_dataset=ds_train,
+            eval_dataset=ds_eval,
+            data_collator=collator,
+            tokenizer=tok,
+        )
         meta_path = output_dir / "train_run_metadata.json"
         run_meta = {
             "project_task": "multilingual next-utterance generation",
@@ -460,8 +504,8 @@ def main():
             "logging_steps": logging_steps,
             "save_steps": save_steps,
             "eval_steps": eval_steps,
-            "save_strategy": _to_jsonable(args_tr.save_strategy),
-            "eval_strategy": _to_jsonable(args_tr.eval_strategy),
+            "save_strategy": _to_jsonable(train_args.save_strategy),
+            "eval_strategy": _to_jsonable(train_args.eval_strategy),
             "bf16": bool(bf16),
             "fp16": bool(fp16),
             "dtype": torch_dtype_used,
@@ -490,6 +534,8 @@ def main():
             "tokenizer_saved_path": None,
             "training_completed": False,
             "resume_from_checkpoint": resume_from_checkpoint,
+            "model_family": model_family,
+            "response_only_loss": True,
         }
         save_json(meta_path, run_meta)
         logger.info("train_metadata_path(initial)=%s", meta_path)

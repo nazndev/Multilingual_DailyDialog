@@ -9,8 +9,8 @@ model:
   device_map: auto
 
 data:
-  train_path: sft/multilingual_1000/train.jsonl
-  eval_path: sft/multilingual_1000/validation.jsonl
+  train_path: sft/gemma_bn/train.jsonl
+  eval_path: sft/gemma_bn/validation.jsonl
 
 training:
   seed: 42

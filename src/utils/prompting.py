@@ -129,6 +129,11 @@ def normalize_messages_for_model(
     return out
 
 
+def to_gemma_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Convert Qwen-style messages into Gemma chat roles (`user`/`model`)."""
+    return normalize_messages_for_model(messages, MODEL_FAMILY_GEMMA)
+
+
 def build_generation_messages(
     history_messages: list[dict[str, Any]],
     lang: str,
@@ -165,7 +170,7 @@ def messages_for_generation_from_record(
     Strips the dataset's stored system message and replaces it with ``build_system_prompt`` output
     so eval matches the current template and YAML options.
     """
-    msgs = list(rec.get("messages") or [])
+    msgs = [dict(m) for m in list(rec.get("messages") or []) if isinstance(m, dict)]
     if len(msgs) < 2:
         return []
     lang = (rec.get("lang") or "bn").strip() or "bn"
@@ -181,13 +186,18 @@ def messages_for_generation_from_record(
         short_reply_hint=short_reply_hint,
         system_template=system_template,
     )
+    normalized = normalize_messages_for_model(msgs, MODEL_FAMILY_GEMMA if any((m.get("role") or "").strip() == "model" for m in msgs) else MODEL_FAMILY_DEFAULT)
+    if not normalized:
+        return []
     body: list[dict[str, str]] = []
-    for m in msgs[:-1]:
+    for m in normalized[:-1]:
         role = (m.get("role") or "").strip()
-        if role == "system":
-            continue
         content = _text_or_empty(m.get("content"))
-        if not content or role not in ("user", "assistant"):
+        if not content:
+            continue
+        if role == "model":
+            role = "assistant"
+        if role not in ("user", "assistant"):
             continue
         body.append({"role": role, "content": content})
     qwen_style = build_generation_messages(body, lang, system)
