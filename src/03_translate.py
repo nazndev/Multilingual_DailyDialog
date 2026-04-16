@@ -2,6 +2,7 @@ import argparse
 import ast
 import hashlib
 import json
+import re
 import sys
 import time
 import traceback
@@ -20,6 +21,45 @@ from src.utils.logging_utils import setup_logger, banner, log_config_safely, log
 LANG_MAP = {"bn": "ben_Beng", "ar": "arb_Arab", "es": "spa_Latn", "en": "eng_Latn"}
 # Human-readable names for LLM translation prompts
 LANG_NAMES = {"bn": "Bengali", "ar": "Arabic", "es": "Spanish", "en": "English"}
+
+
+def normalize_bn(text: str) -> str:
+    if not text:
+        return text
+
+    text = text.strip().lower()
+
+    # remove punctuation
+    text = re.sub(r"[।.!?]", "", text)
+
+    # remove emojis and extra symbols
+    text = re.sub(r"[^\w\s\u0980-\u09FF]", "", text)
+
+    text = text.strip()
+
+    # pattern-based normalization
+    if text.startswith("হ্যাঁ") or text.startswith("হ্যা"):
+        return "হ্যাঁ"
+
+    if text.startswith("না"):
+        return "না"
+
+    if "ধন্যবাদ" in text:
+        return "ধন্যবাদ"
+
+    if "স্বাগতম" in text:
+        return "স্বাগতম"
+
+    if "ঠিক আছে" in text or "ওকে" in text:
+        return "ঠিক আছে"
+
+    if "অবশ্যই" in text:
+        return "অবশ্যই"
+
+    if "মোটেও না" in text:
+        return "মোটেও না"
+
+    return text
 
 
 def sha256(s: str) -> str:
@@ -103,7 +143,11 @@ def translate_one_api(cfg: dict, text: str, src: str = "en", tgt: str = "bn") ->
 
     prompt = (
         f"Translate the following English text to {target_lang}. "
-        "Preserve meaning, tone, and naturalness. Output only the translation, no explanation or quotes.\n\n"
+        "Use a strict, consistent, and literal translation style. "
+        "Do NOT paraphrase. Do NOT shorten. Do NOT add words. "
+        "Always use the same phrasing for similar sentences. "
+        "Follow a formal and consistent structure. "
+        "Output ONLY the translation.\n\n"
         f"English: {text}"
     )
 
@@ -120,6 +164,7 @@ def translate_one_api(cfg: dict, text: str, src: str = "en", tgt: str = "bn") ->
                 )
                 out = (resp.choices[0].message.content or "").strip()
                 if out:
+                    out = normalize_bn(out)
                     return out
             except Exception as e:
                 last_err = e
@@ -181,9 +226,11 @@ def translate_many_api(cfg: dict, texts: list[str], src: str = "en", tgt: str = 
 
     prompt = (
         f"Translate the following English dialogue turns to {target_lang}. "
-        "Return ONLY a valid JSON array of strings with EXACTLY the same length and order as the input. "
-        "No explanations, no extra keys, no markdown.\n\n"
-        f"Input (English turns, JSON array, length={len(texts)}):\n"
+        "Use strict, consistent, and literal translation. "
+        "Do NOT paraphrase. Do NOT vary wording. "
+        "Ensure similar sentences are translated identically. "
+        "Keep structure close to English. "
+        "Return ONLY a JSON array of translated strings with EXACT same order and length.\n\n"
         f"{json.dumps(texts, ensure_ascii=False)}"
     )
 
@@ -205,7 +252,7 @@ def translate_many_api(cfg: dict, texts: list[str], src: str = "en", tgt: str = 
             out_list = _parse_list_of_strings(raw)
             if len(out_list) != len(texts):
                 raise ValueError(f"Length mismatch: expected {len(texts)} got {len(out_list)}")
-            return [x.strip() for x in out_list]
+            return [normalize_bn(x.strip()) for x in out_list]
         except Exception as e:
             last_err = e
             if attempt < max_retries - 1:
