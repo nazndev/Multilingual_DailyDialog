@@ -134,6 +134,21 @@ def to_gemma_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     return normalize_messages_for_model(messages, MODEL_FAMILY_GEMMA)
 
 
+def select_unsloth_chat_template(model_id: str) -> str:
+    """
+    Select the Unsloth chat template name from the model id.
+
+    - Qwen 2.5 models -> ``qwen-2.5``
+    - Gemma 2 IT models -> ``gemma2``
+    """
+    lowered = (model_id or "").lower()
+    if "qwen" in lowered:
+        return "qwen-2.5"
+    if "gemma" in lowered:
+        return "gemma2"
+    raise ValueError(f"Unsupported model for Unsloth chat template selection: {model_id!r}")
+
+
 def build_generation_messages(
     history_messages: list[dict[str, Any]],
     lang: str,
