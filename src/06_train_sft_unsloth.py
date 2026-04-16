@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from unsloth import FastLanguageModel  # type: ignore[import-not-found]
-from unsloth.chat_templates import get_chat_template  # type: ignore[import-not-found]  # type: ignore[import-untyped]
+from unsloth.chat_templates import get_chat_template  # type: ignore[import-not-found]
 
 import torch
 from datasets import load_dataset
@@ -123,6 +123,33 @@ def _has_nonempty_text(example: dict) -> bool:
     return isinstance(text, str) and bool(text.strip())
 
 
+def trim_text(text: str, max_chars: int = 2000) -> str:
+    if not isinstance(text, str):
+        return ""
+    return text[:max_chars]
+
+
+def _trim_text_example(example: dict, max_chars: int = 2000) -> dict:
+    t = example.get("text")
+    return {"text": trim_text(t, max_chars) if isinstance(t, str) else ""}
+
+
+def _tokenize_sft_example(example: dict, tokenizer, max_length: int) -> dict:
+    tokens = tokenizer(
+        example["text"],
+        truncation=True,
+        max_length=max_length,
+        padding="max_length",
+    )
+    input_ids = list(tokens["input_ids"])
+    attention_mask = list(tokens["attention_mask"])
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": input_ids.copy(),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -200,15 +227,54 @@ def main():
                 )
                 ds_eval = ds_eval.filter(_has_nonempty_text, batched=False, num_proc=1)
 
+        with timer(logger, "trim_text_dataset"):
+            ds_train = ds_train.map(
+                _trim_text_example,
+                batched=False,
+                num_proc=1,
+                fn_kwargs={"max_chars": 2000},
+            )
+            if ds_eval is not None:
+                ds_eval = ds_eval.map(
+                    _trim_text_example,
+                    batched=False,
+                    num_proc=1,
+                    fn_kwargs={"max_chars": 2000},
+                )
+
+        with timer(logger, "tokenize_dataset"):
+            train_tok_cols = list(ds_train.column_names)
+            ds_train = ds_train.map(
+                _tokenize_sft_example,
+                batched=False,
+                remove_columns=train_tok_cols,
+                num_proc=1,
+                fn_kwargs={"tokenizer": tokenizer, "max_length": max_seq_length},
+            )
+            if ds_eval is not None:
+                eval_tok_cols = list(ds_eval.column_names)
+                ds_eval = ds_eval.map(
+                    _tokenize_sft_example,
+                    batched=False,
+                    remove_columns=eval_tok_cols,
+                    num_proc=1,
+                    fn_kwargs={"tokenizer": tokenizer, "max_length": max_seq_length},
+                )
+
         train_rows = len(ds_train)
         eval_rows = len(ds_eval) if ds_eval is not None else 0
         if train_rows == 0:
             raise ValueError("No valid training samples after chat-template rendering.")
-        preview = ds_train[0]["text"] if train_rows > 0 else ""
-        if len(preview) > 400:
-            preview = preview[:400] + "..."
-        logger.info("formatted_train_rows=%s formatted_eval_rows=%s", train_rows, eval_rows)
-        logger.info("first_rendered_train_sample=%s", preview.replace("\n", "\\n"))
+        print("DEBUG SAMPLE LENGTHS:")
+        print(len(ds_train[0]["input_ids"]))
+        print(len(ds_train[0]["labels"]))
+        if len(ds_train[0]["input_ids"]) != max_seq_length or len(ds_train[0]["labels"]) != max_seq_length:
+            raise ValueError(
+                f"Tokenized length mismatch: expected max_seq_length={max_seq_length}, "
+                f"got input_ids={len(ds_train[0]['input_ids'])}, labels={len(ds_train[0]['labels'])}."
+            )
+        logger.info("tokenized_train_rows=%s tokenized_eval_rows=%s", train_rows, eval_rows)
+        logger.info("debug_sample_input_ids_len=%s debug_sample_labels_len=%s", len(ds_train[0]["input_ids"]), len(ds_train[0]["labels"]))
 
         lora_cfg = cfg["lora"]
         if not bool(lora_cfg.get("enabled", True)):
@@ -286,7 +352,7 @@ def main():
         if "processing_class" in sft_sig:
             sft_kwargs["processing_class"] = tokenizer
         if "dataset_text_field" in sft_sig:
-            sft_kwargs["dataset_text_field"] = "text"
+            sft_kwargs["dataset_text_field"] = None
         if "max_seq_length" in sft_sig:
             sft_kwargs["max_seq_length"] = max_seq_length
         if "packing" in sft_sig:
