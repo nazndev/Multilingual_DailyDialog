@@ -7,12 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from unsloth import FastLanguageModel  # type: ignore[import-not-found]
+from unsloth.chat_templates import get_chat_template  # type: ignore[import-not-found]  # type: ignore[import-untyped]
+
 import torch
 from datasets import load_dataset
 from transformers import TrainingArguments
 from trl import SFTTrainer
-from unsloth import FastLanguageModel
-from unsloth.chat_templates import get_chat_template
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.utils.env import get_dirs, get_env, resolve_path
@@ -99,6 +100,29 @@ def _count_parameters(model) -> tuple[int, int, float]:
     return total, trainable, pct
 
 
+def _render_chat_batch(batch: dict[str, list[Any]], tokenizer) -> dict[str, list[str]]:
+    rendered: list[str] = []
+    for messages in batch.get("messages", []):
+        if not isinstance(messages, list) or not messages:
+            rendered.append("")
+            continue
+        try:
+            text = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            rendered.append(text if isinstance(text, str) else "")
+        except Exception:
+            rendered.append("")
+    return {"text": rendered}
+
+
+def _has_nonempty_text(example: dict) -> bool:
+    text = example.get("text")
+    return isinstance(text, str) and bool(text.strip())
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -155,34 +179,26 @@ def main():
             )
             tokenizer = get_chat_template(tokenizer, chat_template=chat_template)
 
-        def _render_batch(batch: dict[str, list[Any]]) -> dict[str, list[str]]:
-            rendered: list[str] = []
-            for messages in batch.get("messages", []):
-                if not isinstance(messages, list) or not messages:
-                    rendered.append("")
-                    continue
-                try:
-                    text = tokenizer.apply_chat_template(
-                        messages,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    )
-                    rendered.append(text if isinstance(text, str) else "")
-                except Exception:
-                    rendered.append("")
-            return {"text": rendered}
-
         with timer(logger, "format_text_dataset"):
             train_cols = list(ds_train.column_names)
-            ds_train = ds_train.map(_render_batch, batched=True, remove_columns=train_cols)
-            ds_train = ds_train.filter(lambda x: isinstance(x.get("text"), str) and bool(x["text"].strip()), batched=False)
+            ds_train = ds_train.map(
+                _render_chat_batch,
+                batched=True,
+                remove_columns=train_cols,
+                num_proc=1,
+                fn_kwargs={"tokenizer": tokenizer},
+            )
+            ds_train = ds_train.filter(_has_nonempty_text, batched=False, num_proc=1)
             if ds_eval is not None:
                 eval_cols = list(ds_eval.column_names)
-                ds_eval = ds_eval.map(_render_batch, batched=True, remove_columns=eval_cols)
-                ds_eval = ds_eval.filter(
-                    lambda x: isinstance(x.get("text"), str) and bool(x["text"].strip()),
-                    batched=False,
+                ds_eval = ds_eval.map(
+                    _render_chat_batch,
+                    batched=True,
+                    remove_columns=eval_cols,
+                    num_proc=1,
+                    fn_kwargs={"tokenizer": tokenizer},
                 )
+                ds_eval = ds_eval.filter(_has_nonempty_text, batched=False, num_proc=1)
 
         train_rows = len(ds_train)
         eval_rows = len(ds_eval) if ds_eval is not None else 0
@@ -275,6 +291,7 @@ def main():
             sft_kwargs["max_seq_length"] = max_seq_length
         if "packing" in sft_sig:
             sft_kwargs["packing"] = False
+        sft_kwargs["dataset_num_proc"] = 1
         trainer = SFTTrainer(**sft_kwargs)
 
         total_params, trainable_params, trainable_pct = _count_parameters(model)
