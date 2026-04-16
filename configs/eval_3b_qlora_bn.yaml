@@ -10,7 +10,7 @@ model:
   lora_adapter_dir: model_3b_qlora_bn/lora_adapter
 
 data:
-  test_path: sft/multilingual_1000/test.jsonl
+  test_path: sft/qwen_bn/test.jsonl
 
 evaluation:
   run_baseline: true

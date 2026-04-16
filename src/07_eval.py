@@ -418,6 +418,16 @@ def main():
         adapter = resolve_path(adapter_rel, dirs["outputs"]) if adapter_rel else None
         test_path = resolve_path(cfg["data"]["test_path"], dirs["data"])
         logger.info("test_path=%s base_model=%s adapter=%s", test_path, base, adapter)
+        base_l = (base or "").lower()
+        test_path_l = str(test_path).lower()
+        if "qwen" in base_l:
+            assert "qwen_bn" in test_path_l, (
+                f"Evaluation dataset mismatch: model '{base}' requires a qwen_bn test set, got '{test_path}'."
+            )
+        if "gemma" in base_l:
+            assert "gemma_bn" in test_path_l, (
+                f"Evaluation dataset mismatch: model '{base}' requires a gemma_bn test set, got '{test_path}'."
+            )
 
         eval_cfg = cfg.get("evaluation", {}) or {}
         bleu_tokenizer = _resolve_bleu_tokenizer(eval_cfg)
@@ -436,6 +446,7 @@ def main():
 
         with timer(logger, "load_dataset"):
             ds = load_dataset("json", data_files=str(test_path), split="train")
+        logger.info(f"Using eval dataset: {test_path}")
         logger.info("test_dataset_size=%s", len(ds))
 
         run_baseline = bool(eval_cfg.get("run_baseline", False))
