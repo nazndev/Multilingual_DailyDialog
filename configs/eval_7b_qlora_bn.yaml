@@ -7,7 +7,7 @@ model:
   load_in_8bit: false
   torch_dtype: bfloat16
   device_map: auto
-  lora_adapter_dir: model_7b_qlora_bn/lora_adapter
+  lora_adapter_dir: model_7b_unsloth_bn/lora_adapter
 
 data:
   test_path: sft/qwen_bn/test.jsonl

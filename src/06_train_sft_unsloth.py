@@ -100,54 +100,94 @@ def _count_parameters(model) -> tuple[int, int, float]:
     return total, trainable, pct
 
 
-def _render_chat_batch(batch: dict[str, list[Any]], tokenizer) -> dict[str, list[str]]:
-    rendered: list[str] = []
-    for messages in batch.get("messages", []):
-        if not isinstance(messages, list) or not messages:
-            rendered.append("")
-            continue
-        try:
-            text = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            rendered.append(text if isinstance(text, str) else "")
-        except Exception:
-            rendered.append("")
-    return {"text": rendered}
+def _tokenize_response_only_example(example: dict, tokenizer, max_length: int) -> dict:
+    messages = example.get("messages") or []
+    if not isinstance(messages, list) or len(messages) < 2:
+        return {
+            "input_ids": [],
+            "attention_mask": [],
+            "labels": [],
+        }
 
+    last_msg = messages[-1]
+    last_role = (last_msg.get("role") or "").strip()
+    if last_role not in ("assistant", "model"):
+        return {
+            "input_ids": [],
+            "attention_mask": [],
+            "labels": [],
+        }
 
-def _has_nonempty_text(example: dict) -> bool:
-    text = example.get("text")
-    return isinstance(text, str) and bool(text.strip())
+    target_text = (last_msg.get("content") or "").strip()
+    if not target_text:
+        return {
+            "input_ids": [],
+            "attention_mask": [],
+            "labels": [],
+        }
 
+    prompt_messages = messages[:-1]
 
-def trim_text(text: str, max_chars: int = 2000) -> str:
-    if not isinstance(text, str):
-        return ""
-    return text[:max_chars]
-
-
-def _trim_text_example(example: dict, max_chars: int = 2000) -> dict:
-    t = example.get("text")
-    return {"text": trim_text(t, max_chars) if isinstance(t, str) else ""}
-
-
-def _tokenize_sft_example(example: dict, tokenizer, max_length: int) -> dict:
-    tokens = tokenizer(
-        example["text"],
-        truncation=True,
-        max_length=max_length,
-        padding="max_length",
+    prompt_text = tokenizer.apply_chat_template(
+        prompt_messages,
+        tokenize=False,
+        add_generation_prompt=True,
     )
-    input_ids = list(tokens["input_ids"])
-    attention_mask = list(tokens["attention_mask"])
+
+    prompt_ids = tokenizer(
+        prompt_text,
+        add_special_tokens=False,
+        truncation=False,
+    )["input_ids"]
+    prompt_ids = list(prompt_ids)
+
+    target_ids = tokenizer(
+        target_text,
+        add_special_tokens=False,
+        truncation=False,
+    )["input_ids"]
+    target_ids = list(target_ids)
+
+    eos_id = tokenizer.eos_token_id
+    if eos_id is not None and (not target_ids or target_ids[-1] != eos_id):
+        target_ids = target_ids + [eos_id]
+
+    max_target_len = max_length - 1
+    target_ids = target_ids[:max_target_len]
+
+    available_prompt_len = max_length - len(target_ids)
+    if available_prompt_len < 0:
+        available_prompt_len = 0
+    if len(prompt_ids) > available_prompt_len:
+        prompt_ids = prompt_ids[-available_prompt_len:]
+
+    input_ids = prompt_ids + target_ids
+    labels = ([-100] * len(prompt_ids)) + target_ids
+    attention_mask = [1] * len(input_ids)
+
+    pad_id = tokenizer.pad_token_id
+    if pad_id is None:
+        pad_id = tokenizer.eos_token_id
+    if pad_id is None:
+        raise ValueError("Tokenizer must have pad_token_id or eos_token_id")
+
+    pad_len = max_length - len(input_ids)
+    if pad_len > 0:
+        input_ids += [pad_id] * pad_len
+        attention_mask += [0] * pad_len
+        labels += [-100] * pad_len
+
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
-        "labels": input_ids.copy(),
+        "labels": labels,
     }
+
+
+def _keep_valid_tokenized_example(example: dict, max_length: int) -> bool:
+    input_ids = example.get("input_ids") or []
+    labels = example.get("labels") or []
+    return len(input_ids) == max_length and any(x != -100 for x in labels)
 
 
 def main():
@@ -206,75 +246,65 @@ def main():
             )
             tokenizer = get_chat_template(tokenizer, chat_template=chat_template)
 
-        with timer(logger, "format_text_dataset"):
+        with timer(logger, "tokenize_dataset"):
             train_cols = list(ds_train.column_names)
             ds_train = ds_train.map(
-                _render_chat_batch,
-                batched=True,
+                _tokenize_response_only_example,
+                batched=False,
                 remove_columns=train_cols,
-                num_proc=1,
-                fn_kwargs={"tokenizer": tokenizer},
-            )
-            ds_train = ds_train.filter(_has_nonempty_text, batched=False, num_proc=1)
-            if ds_eval is not None:
-                eval_cols = list(ds_eval.column_names)
-                ds_eval = ds_eval.map(
-                    _render_chat_batch,
-                    batched=True,
-                    remove_columns=eval_cols,
-                    num_proc=1,
-                    fn_kwargs={"tokenizer": tokenizer},
-                )
-                ds_eval = ds_eval.filter(_has_nonempty_text, batched=False, num_proc=1)
-
-        with timer(logger, "trim_text_dataset"):
-            ds_train = ds_train.map(
-                _trim_text_example,
-                batched=False,
-                num_proc=1,
-                fn_kwargs={"max_chars": 2000},
-            )
-            if ds_eval is not None:
-                ds_eval = ds_eval.map(
-                    _trim_text_example,
-                    batched=False,
-                    num_proc=1,
-                    fn_kwargs={"max_chars": 2000},
-                )
-
-        with timer(logger, "tokenize_dataset"):
-            train_tok_cols = list(ds_train.column_names)
-            ds_train = ds_train.map(
-                _tokenize_sft_example,
-                batched=False,
-                remove_columns=train_tok_cols,
                 num_proc=1,
                 fn_kwargs={"tokenizer": tokenizer, "max_length": max_seq_length},
             )
+            ds_train = ds_train.filter(
+                _keep_valid_tokenized_example,
+                batched=False,
+                num_proc=1,
+                fn_kwargs={"max_length": max_seq_length},
+            )
             if ds_eval is not None:
-                eval_tok_cols = list(ds_eval.column_names)
+                eval_cols = list(ds_eval.column_names)
                 ds_eval = ds_eval.map(
-                    _tokenize_sft_example,
+                    _tokenize_response_only_example,
                     batched=False,
-                    remove_columns=eval_tok_cols,
+                    remove_columns=eval_cols,
                     num_proc=1,
                     fn_kwargs={"tokenizer": tokenizer, "max_length": max_seq_length},
+                )
+                ds_eval = ds_eval.filter(
+                    _keep_valid_tokenized_example,
+                    batched=False,
+                    num_proc=1,
+                    fn_kwargs={"max_length": max_seq_length},
                 )
 
         train_rows = len(ds_train)
         eval_rows = len(ds_eval) if ds_eval is not None else 0
         if train_rows == 0:
-            raise ValueError("No valid training samples after chat-template rendering.")
+            raise ValueError("No valid training samples after response-only tokenization.")
+        sample_labels = ds_train[0]["labels"]
+        sample_input_ids = ds_train[0]["input_ids"]
+        supervised_tokens = sum(1 for x in sample_labels if x != -100)
+        masked_tokens = sum(1 for x in sample_labels if x == -100)
         print("DEBUG SAMPLE LENGTHS:")
-        print(len(ds_train[0]["input_ids"]))
-        print(len(ds_train[0]["labels"]))
-        if len(ds_train[0]["input_ids"]) != max_seq_length or len(ds_train[0]["labels"]) != max_seq_length:
+        print(len(sample_input_ids))
+        print(len(sample_labels))
+        print("DEBUG SUPERVISED TOKENS:", supervised_tokens)
+        print("DEBUG MASKED TOKENS:", masked_tokens)
+        if supervised_tokens == 0:
+            raise ValueError("Response-only tokenization produced zero supervised label tokens on the first sample.")
+        if len(sample_input_ids) != max_seq_length or len(sample_labels) != max_seq_length:
             raise ValueError(
                 f"Tokenized length mismatch: expected max_seq_length={max_seq_length}, "
-                f"got input_ids={len(ds_train[0]['input_ids'])}, labels={len(ds_train[0]['labels'])}."
+                f"got input_ids={len(sample_input_ids)}, labels={len(sample_labels)}."
             )
         logger.info("tokenized_train_rows=%s tokenized_eval_rows=%s", train_rows, eval_rows)
-        logger.info("debug_sample_input_ids_len=%s debug_sample_labels_len=%s", len(ds_train[0]["input_ids"]), len(ds_train[0]["labels"]))
+        logger.info(
+            "debug_sample_input_ids_len=%s debug_sample_labels_len=%s supervised_tokens=%s masked_tokens=%s",
+            len(sample_input_ids),
+            len(sample_labels),
+            supervised_tokens,
+            masked_tokens,
+        )
 
         lora_cfg = cfg["lora"]
         if not bool(lora_cfg.get("enabled", True)):
@@ -402,7 +432,7 @@ def main():
             "total_parameters": total_params,
             "trainable_parameters": trainable_params,
             "trainable_percentage": round(trainable_pct, 6),
-            "response_only_loss": False,
+            "response_only_loss": True,
             "final_adapter_path": None,
             "tokenizer_saved_path": None,
             "training_completed": False,
