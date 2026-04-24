@@ -1,0 +1,27 @@
+judge:
+  model:
+    base_model: Qwen/Qwen2.5-7B-Instruct
+    load_in_4bit: true
+    load_in_8bit: false
+    torch_dtype: bfloat16
+    device_map: auto
+  max_new_tokens: 120
+  system_prompt: >
+    You are an expert evaluator for Bengali dialogue response quality.
+    Judge fairly and prefer the response that best matches context, intent,
+    fluency, and safety.
+
+comparison:
+  candidate_a_name: qwen_3b
+  candidate_b_name: gemma_2b
+  max_cases: 200
+
+inputs:
+  # Update these paths if your eval outputs use different filenames.
+  candidate_a_predictions_path: generations_3b_unsloth_bn_lastturn.jsonl
+  candidate_b_predictions_path: generations_gemma2_2b_it_qlora_bn.jsonl
+
+outputs:
+  judge_report_path: judge_report_7b_3b_vs_gemma.md
+  judge_metrics_path: judge_metrics_7b_3b_vs_gemma.json
+  judge_decisions_path: judge_decisions_7b_3b_vs_gemma.jsonl

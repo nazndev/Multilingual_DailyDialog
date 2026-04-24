@@ -219,6 +219,21 @@ cat $REPORTS_DIR/eval_metrics_7b_qlora_bn.json
 cat $REPORTS_DIR/eval_metrics_gemma2_2b_it_qlora_bn.json
 ```
 
+## 16.A Judge 3B vs Gemma with Qwen 7B
+```bash
+python src/08_judge.py --config configs/judge_7b_3b_vs_gemma.yaml
+```
+
+Expected judge artifacts:
+```bash
+ls $REPORTS_DIR/judge_report_7b_3b_vs_gemma.md
+ls $REPORTS_DIR/judge_metrics_7b_3b_vs_gemma.json
+ls $REPORTS_DIR/judge_decisions_7b_3b_vs_gemma.jsonl
+```
+
+If your eval output filenames differ, edit:
+`configs/judge_7b_3b_vs_gemma.yaml` input paths (`candidate_a_predictions_path`, `candidate_b_predictions_path`).
+
 **Rerun 7B / 3B evaluation only** (same as README):
 
 ```bash

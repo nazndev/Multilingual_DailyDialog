@@ -1,4 +1,4 @@
-.PHONY: venv install translate build-sft train-demo train-final train-3b train-7b eval-demo eval-final eval-3b eval-7b pipeline-demo pipeline-final
+.PHONY: venv install translate build-sft train-demo train-final train-3b train-7b eval-demo eval-final eval-3b eval-7b judge-7b-3b-vs-gemma pipeline-demo pipeline-final
 
 ifneq (,$(wildcard .env))
 include .env
@@ -43,6 +43,9 @@ train-7b:
 
 eval-7b:
 	$(PYTHON) src/07_eval.py --config configs/eval_7b_qlora_bn.yaml
+
+judge-7b-3b-vs-gemma:
+	$(PYTHON) src/08_judge.py --config configs/judge_7b_3b_vs_gemma.yaml
 
 pipeline-demo: translate build-sft train-demo eval-demo
 

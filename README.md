@@ -12,6 +12,7 @@ The supported workflow is:
 2. `src/05_build_sft.py` — build SFT JSONL
 3. `src/06_train_sft.py` — train (LoRA or QLoRA)
 4. `src/07_eval.py` — evaluate
+5. `src/08_judge.py` — optional pairwise LLM judge (Qwen 7B)
 
 ### Bengali-only path (canonical)
 
@@ -180,6 +181,7 @@ Repeat for other checkpoints and compare metrics under `reports/` using the same
 | Training (7B QLoRA, optional) | `configs/training_7b_qlora_bn.yaml` |
 | Training (Gemma 2 2B IT QLoRA, optional) | `configs/training_gemma2_2b_it_qlora_bn.yaml` |
 | Eval (demo / final / 3B / 7B / Gemma) | `configs/eval_demo.yaml`, `configs/eval_final.yaml`, `configs/eval_3b_qlora_bn.yaml`, `configs/eval_7b_qlora_bn.yaml`, `configs/eval_gemma2_2b_it_qlora_bn.yaml` |
+| Judge (Qwen 7B, 3B vs Gemma) | `configs/judge_7b_3b_vs_gemma.yaml` |
 
 SFT prompts and builder options (`sft.*`, including `sft.prompt`) are read from the translation config. Training and evaluation share the same default system prompt text via `src/utils/prompting.py`.
 
@@ -213,6 +215,9 @@ python src/07_eval.py --config configs/eval_final.yaml
 python src/07_eval.py --config configs/eval_3b_qlora_bn.yaml
 python src/07_eval.py --config configs/eval_7b_qlora_bn.yaml
 python src/07_eval.py --config configs/eval_gemma2_2b_it_qlora_bn.yaml
+
+# 5) Optional judge (Qwen 7B compares 3B vs Gemma outputs)
+python src/08_judge.py --config configs/judge_7b_3b_vs_gemma.yaml
 ```
 
 `BASE_MODEL` can still override the config when set in the environment; configs are preferred for reproducibility.
@@ -230,6 +235,7 @@ make train-3b
 make eval-3b
 make train-7b
 make eval-7b
+make judge-7b-3b-vs-gemma
 make pipeline-demo
 make pipeline-final
 ```
@@ -252,6 +258,7 @@ Typical artifacts:
 - Training checkpoints: `outputs/<run>/checkpoint-*`
 - Training metadata: `outputs/<run>/train_run_metadata.json`
 - Eval report, metrics, and JSONL generations: `reports/`
+- Judge artifacts: `reports/judge_report_*.md`, `reports/judge_metrics_*.json`, `reports/judge_decisions_*.jsonl`
 
 ## Notes
 

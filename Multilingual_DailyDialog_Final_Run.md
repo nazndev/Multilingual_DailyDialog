@@ -269,6 +269,26 @@ Exact expected report paths:
 
 ---
 
+## 14) Judge 3B vs Gemma with Qwen 7B (optional)
+
+Uses generation files from the two evaluated candidates and asks
+`Qwen/Qwen2.5-7B-Instruct` to select the better response per example.
+
+```python
+%cd $REPO_DIR
+!python src/08_judge.py --config configs/judge_7b_3b_vs_gemma.yaml
+```
+
+Expected artifacts:
+- `reports/judge_report_7b_3b_vs_gemma.md`
+- `reports/judge_metrics_7b_3b_vs_gemma.json`
+- `reports/judge_decisions_7b_3b_vs_gemma.jsonl`
+
+If your generation filenames differ, update:
+`configs/judge_7b_3b_vs_gemma.yaml` input paths.
+
+---
+
 ## FINAL ORDER
 1. Setup Drive
 2. Sync Repo
@@ -282,3 +302,4 @@ Exact expected report paths:
 10. Evaluate (7B)
 11. *(Optional)* Train (Gemma 2 2B IT)
 12. *(Optional)* Evaluate (Gemma 2 2B IT)
+13. *(Optional)* Judge 3B vs Gemma with Qwen 7B
