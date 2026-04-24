@@ -35,9 +35,12 @@ def load_cfg(path: str) -> dict:
 
 
 def get_reference(rec):
+    target_text = (rec.get("target_text") or "").strip() if isinstance(rec, dict) else ""
+    if target_text:
+        return target_text
     messages = rec.get("messages") or []
     for m in reversed(messages):
-        if m.get("role") == "assistant":
+        if m.get("role") in ("assistant", "model"):
             return (m.get("content") or "").strip()
     return ""
 
